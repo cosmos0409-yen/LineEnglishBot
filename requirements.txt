@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+line-bot-sdk
+python-dotenv
+google-genai
+httpx
+jinja2
+python-multipart

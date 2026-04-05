@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>審核提問 - LINE Tutor Bot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, #1a1a3e, #2d2d5e);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            color: #a78bfa;
+            margin-bottom: 8px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-pending {
+            background: rgba(251, 191, 36, 0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(251, 191, 36, 0.3);
+        }
+
+        .status-approved {
+            background: rgba(52, 211, 153, 0.15);
+            color: #34d399;
+            border: 1px solid rgba(52, 211, 153, 0.3);
+        }
+
+        .card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .card-title {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #8b8ba7;
+            margin-bottom: 12px;
+        }
+
+        .student-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .student-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #6366f1, #a78bfa);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: white;
+        }
+
+        .student-name {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #f0f0f0;
+        }
+
+        .student-time {
+            font-size: 0.85rem;
+            color: #6b6b85;
+        }
+
+        .question-image {
+            max-width: 100%;
+            border-radius: 8px;
+            margin-top: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .question-text {
+            font-size: 1rem;
+            line-height: 1.6;
+            color: #c0c0d0;
+            white-space: pre-wrap;
+        }
+
+        .answer-textarea {
+            width: 100%;
+            min-height: 300px;
+            background: #12121f;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 0.95rem;
+            line-height: 1.6;
+            padding: 16px;
+            resize: vertical;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+
+        .answer-textarea:focus {
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        .answer-textarea:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .approval-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .approval-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid #4b4b6b;
+            transition: all 0.3s;
+        }
+
+        .approval-dot.filled {
+            background: #34d399;
+            border-color: #34d399;
+            box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
+        }
+
+        .approval-text {
+            font-size: 0.9rem;
+            color: #8b8ba7;
+        }
+
+        .btn-approve {
+            width: 100%;
+            padding: 16px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+        }
+
+        .btn-approve:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-approve:active {
+            transform: translateY(0);
+        }
+
+        .btn-approve:disabled {
+            background: #2d2d4e;
+            color: #6b6b85;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .msg-success {
+            text-align: center;
+            padding: 16px;
+            background: rgba(52, 211, 153, 0.1);
+            border: 1px solid rgba(52, 211, 153, 0.3);
+            border-radius: 10px;
+            color: #34d399;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .msg-done {
+            text-align: center;
+            padding: 20px;
+            background: rgba(52, 211, 153, 0.08);
+            border: 1px solid rgba(52, 211, 153, 0.2);
+            border-radius: 12px;
+            color: #34d399;
+        }
+
+        .msg-done h2 { margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📝 審核學生提問</h1>
+            {% if question.status == 'sent' %}
+            <span class="status-badge status-approved">✅ 已發送給學生</span>
+            {% elif question.status == 'approved' %}
+            <span class="status-badge status-approved">✅ 已通過審核</span>
+            {% else %}
+            <span class="status-badge status-pending">⏳ 等待審核 ({{ question.approval_count }}/2)</span>
+            {% endif %}
+        </div>
+
+        {% if message %}
+        <div class="msg-success">{{ message }}</div>
+        {% endif %}
+
+        <!-- 學生資訊 -->
+        <div class="card">
+            <div class="card-title">👤 學生資訊</div>
+            <div class="student-info">
+                <div class="student-avatar">{{ question.student_name[0] }}</div>
+                <div>
+                    <div class="student-name">{{ question.student_name }}</div>
+                    <div class="student-time">{{ question.created_at[:19].replace('T', ' ') }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 學生提問 -->
+        <div class="card">
+            <div class="card-title">❓ 學生提問</div>
+            {% if question.question_type == 'image' and question.question_image_base64 %}
+            <img class="question-image" src="data:image/jpeg;base64,{{ question.question_image_base64 }}" alt="學生提問圖片">
+            {% endif %}
+            {% if question.question_text %}
+            <div class="question-text">{{ question.question_text }}</div>
+            {% elif question.question_type == 'image' %}
+            <div class="question-text" style="color: #6b6b85; font-style: italic;">（圖片提問，無附加文字）</div>
+            {% endif %}
+        </div>
+
+        <!-- 解答編輯 / 審核 -->
+        {% if question.status in ('approved', 'sent') %}
+        <div class="msg-done">
+            {% if question.status == 'sent' %}
+            <h2>✅ 解答已發送給學生</h2>
+            <p>此提問已通過兩位導師的審核，解答已成功推播給學生。</p>
+            {% else %}
+            <h2>✅ 已完成雙導師審核</h2>
+            <p>此提問已通過兩位導師的審核，解答即將發送給學生。</p>
+            {% endif %}
+        </div>
+        <div class="card">
+            <div class="card-title">📋 最終解答</div>
+            <div class="question-text">{{ question.final_answer }}</div>
+        </div>
+        {% else %}
+        <form method="POST">
+            <div class="card">
+                <div class="card-title">🤖 AI 解答（可直接編輯修改）</div>
+                <textarea class="answer-textarea" name="final_answer">{{ question.final_answer }}</textarea>
+            </div>
+
+            <div class="card">
+                <div class="card-title">審核進度</div>
+                <div class="approval-bar">
+                    <div class="approval-dot {{ 'filled' if question.approval_count >= 1 else '' }}"></div>
+                    <div class="approval-dot {{ 'filled' if question.approval_count >= 2 else '' }}"></div>
+                    <span class="approval-text">{{ question.approval_count }} / 2 位導師已通過</span>
+                </div>
+                <button type="submit" class="btn-approve">✅ 確認通過並送出</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+</body>
+</html>
