@@ -141,36 +141,45 @@
             cursor: not-allowed;
         }
 
-        .approval-bar {
+        .approver-status {
             display: flex;
-            align-items: center;
             gap: 12px;
             margin-bottom: 16px;
         }
 
-        .approval-dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            border: 2px solid #4b4b6b;
-            transition: all 0.3s;
-        }
-
-        .approval-dot.filled {
-            background: #34d399;
-            border-color: #34d399;
-            box-shadow: 0 0 8px rgba(52, 211, 153, 0.4);
-        }
-
-        .approval-text {
+        .approver-chip {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            border-radius: 10px;
             font-size: 0.9rem;
-            color: #8b8ba7;
+            font-weight: 600;
+        }
+
+        .approver-chip.done {
+            background: rgba(52, 211, 153, 0.12);
+            border: 1px solid rgba(52, 211, 153, 0.3);
+            color: #34d399;
+        }
+
+        .approver-chip.pending {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #6b6b85;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 4px;
         }
 
         .btn-approve {
-            width: 100%;
+            flex: 1;
             padding: 16px;
-            font-size: 1.1rem;
+            font-size: 1rem;
             font-weight: 600;
             border: none;
             border-radius: 12px;
@@ -180,22 +189,73 @@
             color: white;
         }
 
-        .btn-approve:hover {
+        .btn-approve:hover:not(:disabled) {
             transform: translateY(-1px);
             box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4);
         }
 
-        .btn-approve:active {
+        .btn-approve:active:not(:disabled) {
             transform: translateY(0);
         }
 
         .btn-approve:disabled {
-            background: #2d2d4e;
-            color: #6b6b85;
+            background: #1e1e38;
+            color: #34d399;
             cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
+            border: 1px solid rgba(52, 211, 153, 0.25);
         }
+
+        .bypass-section {
+            margin-top: 24px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            padding-top: 16px;
+        }
+
+        .bypass-section summary {
+            font-size: 0.8rem;
+            color: #4b4b6b;
+            cursor: pointer;
+            user-select: none;
+            list-style: none;
+        }
+
+        .bypass-section summary:hover { color: #6b6b85; }
+
+        .bypass-inner {
+            margin-top: 12px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .bypass-input {
+            flex: 1;
+            padding: 10px 14px;
+            background: #12121f;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 0.9rem;
+        }
+
+        .bypass-input:focus {
+            outline: none;
+            border-color: #6366f1;
+        }
+
+        .btn-bypass {
+            padding: 10px 18px;
+            background: #2d2d4e;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #a0a0b8;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn-bypass:hover { background: #3a3a5e; color: #e0e0e0; }
 
         .msg-success {
             text-align: center;
@@ -278,23 +338,59 @@
             <div class="question-text">{{ question.final_answer }}</div>
         </div>
         {% else %}
-        <form method="POST">
+        <form method="POST" id="main-form">
+            <input type="hidden" name="bypass_password" value="">
             <div class="card">
                 <div class="card-title">🤖 AI 解答（可直接編輯修改）</div>
-                <textarea class="answer-textarea" name="final_answer">{{ question.final_answer }}</textarea>
+                <textarea class="answer-textarea" name="final_answer" id="main-answer">{{ question.final_answer }}</textarea>
             </div>
 
             <div class="card">
                 <div class="card-title">審核進度</div>
-                <div class="approval-bar">
-                    <div class="approval-dot {{ 'filled' if question.approval_count >= 1 else '' }}"></div>
-                    <div class="approval-dot {{ 'filled' if question.approval_count >= 2 else '' }}"></div>
-                    <span class="approval-text">{{ question.approval_count }} / 2 位導師已通過</span>
+                <div class="approver-status">
+                    <div class="approver-chip {{ 'done' if question.approver_cheng_jie else 'pending' }}">
+                        {{ '✅' if question.approver_cheng_jie else '⏳' }} 承傑
+                    </div>
+                    <div class="approver-chip {{ 'done' if question.approver_tutor else 'pending' }}">
+                        {{ '✅' if question.approver_tutor else '⏳' }} 導師
+                    </div>
                 </div>
-                <button type="submit" class="btn-approve">✅ 確認通過並送出</button>
+                <div class="btn-row">
+                    <button type="submit" name="approver" value="cheng_jie" class="btn-approve"
+                        {{ 'disabled' if question.approver_cheng_jie }}>
+                        {{ '✅ 承傑已審核' if question.approver_cheng_jie else '✅ 承傑審核' }}
+                    </button>
+                    <button type="submit" name="approver" value="tutor" class="btn-approve"
+                        {{ 'disabled' if question.approver_tutor }}>
+                        {{ '✅ 導師已審核' if question.approver_tutor else '✅ 導師審核' }}
+                    </button>
+                </div>
+
+                <details class="bypass-section">
+                    <summary>🔑 單人快速通過</summary>
+                    <div class="bypass-inner">
+                        <input type="password" class="bypass-input" id="bypass-pwd" placeholder="輸入驗證碼">
+                        <button type="button" class="btn-bypass" onclick="submitBypass()">確認快速通過</button>
+                    </div>
+                </details>
             </div>
         </form>
         {% endif %}
     </div>
+<script>
+    function submitBypass() {
+        const pwd = document.getElementById('bypass-pwd').value;
+        if (!pwd) { alert('請輸入驗證碼'); return; }
+        const form = document.getElementById('main-form');
+        form.querySelector('input[name="bypass_password"]').value = pwd;
+        // 移除 approver 按鈕的 name 避免衝突，改用隱藏欄位
+        const hiddenApprover = document.createElement('input');
+        hiddenApprover.type = 'hidden';
+        hiddenApprover.name = 'approver';
+        hiddenApprover.value = 'fast';
+        form.appendChild(hiddenApprover);
+        form.submit();
+    }
+</script>
 </body>
 </html>

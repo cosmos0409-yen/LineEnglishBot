@@ -138,8 +138,36 @@ async def review_page(ticket_id: str):
     return HTMLResponse(content=html)
 
 
+FAST_APPROVE_PASSWORD = "fang0220"
+
+
+async def _trigger_push_if_approved(ticket_id: str) -> tuple[dict, str]:
+    """審核完成後觸發 LINE Push，回傳最新 question 與訊息。"""
+    question = await supabase_service.get_question(ticket_id)
+    if question["approval_count"] >= 2:
+        push_text = (
+            f"您好 {question['student_name']}！\n\n"
+            f"您的問題已由導師審核完成，以下是最終解答：\n\n"
+            f"{question['final_answer']}"
+        )
+        success = await line_service.push_message(question["student_line_id"], push_text)
+        if success:
+            await supabase_service.mark_as_sent(ticket_id)
+            question = await supabase_service.get_question(ticket_id)
+            print(f"[LINE] 已推播解答給學生: {question['student_name']}")
+            return question, "✅ 雙導師審核完成！解答已成功發送給學生。"
+        else:
+            return question, "⚠️ 雙導師審核完成，但 LINE 發送失敗，請聯繫管理員手動處理。"
+    return question, "✅ 審核通過！等待另一位導師審核。"
+
+
 @app.post("/review/{ticket_id}", response_class=HTMLResponse)
-async def review_submit(ticket_id: str, final_answer: str = Form(...)):
+async def review_submit(
+    ticket_id: str,
+    final_answer: str = Form(...),
+    approver: str = Form(""),
+    bypass_password: str = Form(""),
+):
     """處理導師的審核提交。"""
     question = await supabase_service.get_question(ticket_id)
     if not question:
@@ -150,30 +178,27 @@ async def review_submit(ticket_id: str, final_answer: str = Form(...)):
         html = template.render(question=question, message="此提問已完成審核。")
         return HTMLResponse(content=html)
 
-    # 執行審核
-    updated = await supabase_service.approve_question(ticket_id, final_answer)
-
-    if updated:
-        question = await supabase_service.get_question(ticket_id)
-        if question["approval_count"] >= 2:
-            # 雙導師通過 → LINE Push 最終解答給學生
-            push_text = (
-                f"您好 {question['student_name']}！\n\n"
-                f"您的問題已由兩位導師審核完成，以下是最終解答：\n\n"
-                f"{question['final_answer']}"
-            )
-            success = await line_service.push_message(question["student_line_id"], push_text)
-            if success:
-                await supabase_service.mark_as_sent(ticket_id)
-                question = await supabase_service.get_question(ticket_id)
-                msg = "✅ 雙導師審核完成！解答已成功發送給學生。"
-                print(f"[LINE] 已推播解答給學生: {question['student_name']}")
-            else:
-                msg = "⚠️ 雙導師審核完成，但 LINE 發送失敗，請聯繫管理員手動處理。"
+    # 快速通過（密碼驗證）
+    if bypass_password == FAST_APPROVE_PASSWORD:
+        updated = await supabase_service.fast_approve(ticket_id, final_answer)
+        if updated:
+            question, msg = await _trigger_push_if_approved(ticket_id)
         else:
-            msg = "✅ 審核通過！等待第二位導師審核。"
+            question = await supabase_service.get_question(ticket_id)
+            msg = "❌ 快速通過失敗（可能已完成審核）。"
+
+    # 具名審核
+    elif approver in ("cheng_jie", "tutor"):
+        updated = await supabase_service.approve_by_role(ticket_id, approver, final_answer)
+        if updated:
+            question, msg = await _trigger_push_if_approved(ticket_id)
+        else:
+            question = await supabase_service.get_question(ticket_id)
+            msg = "⚠️ 您已審核過此提問，或提問已完成審核。"
+
     else:
-        msg = "❌ 審核提交失敗，請稍後再試。"
+        question = await supabase_service.get_question(ticket_id)
+        msg = "❌ 無效的審核操作。"
 
     template = templates.get_template("review.html")
     html = template.render(question=question, message=msg)

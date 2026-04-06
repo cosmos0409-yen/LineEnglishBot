@@ -76,20 +76,30 @@ async def mark_as_sent(question_id: str) -> bool:
         return resp.status_code == 200
 
 
-async def approve_question(question_id: str, edited_answer: str) -> dict | None:
+async def approve_by_role(question_id: str, role: str, edited_answer: str) -> dict | None:
     """
-    導師審核通過：更新最終解答、遞增審核計數。
-    當 approval_count >= 2 時，自動將 status 設為 'approved'。
+    具名導師審核：role 為 'cheng_jie' 或 'tutor'。
+    - 已審核過的角色不可重複送出
+    - 兩位都通過後 status → 'approved'
     """
     rest_url, headers = _get_config()
     question = await get_question(question_id)
     if not question:
         return None
 
+    if question["status"] in ("approved", "sent"):
+        return None
+
+    role_field = f"approver_{role}"
+    if question.get(role_field):
+        print(f"[Supabase] {role} 已審核過，攔截重複送出")
+        return None
+
     new_count = question["approval_count"] + 1
     new_status = "approved" if new_count >= 2 else "pending"
 
     updates = {
+        role_field: True,
         "final_answer": edited_answer,
         "approval_count": new_count,
         "status": new_status,
@@ -107,3 +117,40 @@ async def approve_question(question_id: str, edited_answer: str) -> dict | None:
             return data[0] if isinstance(data, list) and data else data
         print(f"[Supabase] 審核更新失敗: {resp.status_code} {resp.text}")
     return None
+
+
+async def fast_approve(question_id: str, edited_answer: str) -> dict | None:
+    """承傑密碼快速通過：同時設定兩個審核欄位，直接跳至 approved。"""
+    rest_url, headers = _get_config()
+    question = await get_question(question_id)
+    if not question:
+        return None
+
+    if question["status"] in ("approved", "sent"):
+        return None
+
+    updates = {
+        "approver_cheng_jie": True,
+        "approver_tutor": True,
+        "final_answer": edited_answer,
+        "approval_count": 2,
+        "status": "approved",
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{rest_url}/questions",
+            headers=headers,
+            params={"id": f"eq.{question_id}"},
+            json=updates,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data[0] if isinstance(data, list) and data else data
+        print(f"[Supabase] 快速通過更新失敗: {resp.status_code} {resp.text}")
+    return None
+
+
+async def approve_question(question_id: str, edited_answer: str) -> dict | None:
+    """舊版審核（保留相容性，內部改呼叫 approve_by_role）。"""
+    return await approve_by_role(question_id, "cheng_jie", edited_answer)
