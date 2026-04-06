@@ -2,7 +2,7 @@ fastapi
 uvicorn
 line-bot-sdk
 python-dotenv
-google-genai
+openai
 httpx
 jinja2
 python-multipart

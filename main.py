@@ -1,3 +1,4 @@
+import asyncio
 import os
 import base64
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Form
@@ -23,50 +24,84 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 # Jinja2 模板引擎
 templates = Environment(loader=FileSystemLoader("templates"))
 
+# ========== 10 秒訊息緩衝 ==========
 
-async def process_event(event):
+_pending_messages: dict[str, list] = {}   # user_id → [events]
+_pending_tasks: dict[str, asyncio.Task] = {}  # user_id → timer task
+
+
+async def buffer_event(event):
     """
-    背景任務：處理單一 LINE 事件。
-    1. 判斷訊息類型（文字/圖片）
-    2. 取得學生 LINE 顯示名稱
-    3. 呼叫 Gemini AI 產生解答
-    4. 存入 Supabase 資料庫
-    5. 推播到導師 Telegram 群組（含審核連結）
+    將 LINE 事件加入緩衝區，並重新計時 10 秒。
+    同一學生在 10 秒內的所有訊息（文字＋圖片）會合併成一筆處理。
     """
     if not isinstance(event, MessageEvent):
         return
 
     user_id = event.source.user_id
+    _pending_messages.setdefault(user_id, []).append(event)
+
+    old_task = _pending_tasks.get(user_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    _pending_tasks[user_id] = asyncio.create_task(
+        _delayed_process(user_id, delay=10)
+    )
+
+
+async def _delayed_process(user_id: str, delay: int):
+    """等待 delay 秒後，取出該學生的所有緩衝訊息並批次處理。"""
+    await asyncio.sleep(delay)
+    events = _pending_messages.pop(user_id, [])
+    _pending_tasks.pop(user_id, None)
+    if events:
+        await _process_batch(user_id, events)
+
+
+async def _process_batch(user_id: str, events: list):
+    """
+    批次處理同一學生的多則訊息：
+    - 下載所有圖片（取第一張送 AI）
+    - 合併所有文字
+    - 呼叫 AI、存 DB、推播 Telegram
+    """
     profile = await line_service.get_user_profile(user_id)
     student_name = profile.get("displayName", "未知用戶")
 
     image_bytes = None
     image_base64 = None
-    user_text = None
+    text_parts = []
     question_type = "text"
 
-    if isinstance(event.message, ImageMessageContent):
-        question_type = "image"
-        image_bytes = await line_service.download_image(event.message.id)
-        if not image_bytes:
-            print("[Error] 圖片下載失敗，略過此事件")
-            return
-        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+    for event in events:
+        if isinstance(event.message, ImageMessageContent):
+            if image_bytes is None:
+                # 只取第一張圖片
+                image_bytes = await line_service.download_image(event.message.id)
+                if image_bytes:
+                    question_type = "image"
+                    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+                else:
+                    print("[Error] 圖片下載失敗，略過")
+        elif isinstance(event.message, TextMessageContent):
+            text_parts.append(event.message.text)
+        else:
+            print(f"[Info] 不支援的訊息類型: {event.message.type}")
 
-    elif isinstance(event.message, TextMessageContent):
-        user_text = event.message.text
+    user_text = "\n".join(text_parts) if text_parts else None
 
-    else:
-        print(f"[Info] 不支援的訊息類型: {event.message.type}")
+    if image_bytes is None and user_text is None:
+        print(f"[Info] {student_name} 無有效訊息內容，略過")
         return
 
-    # 呼叫 Gemini AI
-    print(f"[Gemini] 開始處理 {student_name} 的提問...")
+    # 呼叫 AI
+    print(f"[OpenAI] 開始處理 {student_name} 的提問（共 {len(events)} 則訊息）...")
     ai_answer = await gemini_service.generate_answer(
         image_bytes=image_bytes,
         user_text=user_text,
     )
-    print(f"[Gemini] 處理完成，解答長度: {len(ai_answer)} 字")
+    print(f"[OpenAI] 處理完成，解答長度: {len(ai_answer)} 字")
 
     # 存入 Supabase
     record = await supabase_service.save_question(
@@ -121,7 +156,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=400, detail="Invalid signature")
 
     for event in events:
-        background_tasks.add_task(process_event, event)
+        background_tasks.add_task(buffer_event, event)
 
     return JSONResponse(content={"status": "ok"})
 
@@ -145,11 +180,7 @@ async def _trigger_push_if_approved(ticket_id: str) -> tuple[dict, str]:
     """審核完成後觸發 LINE Push，回傳最新 question 與訊息。"""
     question = await supabase_service.get_question(ticket_id)
     if question["approval_count"] >= 2:
-        push_text = (
-            f"您好 {question['student_name']}！\n\n"
-            f"您的問題已由導師審核完成，以下是最終解答：\n\n"
-            f"{question['final_answer']}"
-        )
+        push_text = question["final_answer"]
         success = await line_service.push_message(question["student_line_id"], push_text)
         if success:
             await supabase_service.mark_as_sent(ticket_id)
