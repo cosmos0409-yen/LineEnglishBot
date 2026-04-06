@@ -102,7 +102,7 @@ async def process_event(event):
 
 @app.get("/")
 def root():
-    return {"message": "LINE Tutor Bot Phase 3 Server is running"}
+    return {"message": "LINE Tutor Bot Phase 4 Server is running"}
 
 
 @app.post("/webhook")
