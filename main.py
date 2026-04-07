@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import base64
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Form
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -9,7 +10,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageCo
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader
 
-from services import line_service, gemini_service, telegram_service, supabase_service
+from services import line_service, openai_service, telegram_service, supabase_service
 
 load_dotenv()
 
@@ -24,16 +25,30 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 # Jinja2 模板引擎
 templates = Environment(loader=FileSystemLoader("templates"))
 
-# ========== 10 秒訊息緩衝 ==========
+# ========== 30 秒訊息緩衝 ==========
 
 _pending_messages: dict[str, list] = {}   # user_id → [events]
 _pending_tasks: dict[str, asyncio.Task] = {}  # user_id → timer task
 
+_SOCIAL_PATTERN = re.compile(
+    r"^[　\s]*(謝謝|感謝|謝謝老師|謝謝你|多謝|好|好的|好喔|喔|哦|嗯|嗯嗯"
+    r"|了解|收到|知道了|沒問題|ok|o\.k\.|ok謝謝|好謝謝|謝謝ok"
+    r"|thanks|thank\s*you|thx|ty|got\s*it|noted|sure|np)[　\s]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _is_social_only(text: str | None, has_image: bool) -> bool:
+    """若為純文字社交回應（無圖片），回傳 True 代表應跳過 AI 處理。"""
+    if has_image or not text:
+        return False
+    return bool(_SOCIAL_PATTERN.match(text.strip()))
+
 
 async def buffer_event(event):
     """
-    將 LINE 事件加入緩衝區，並重新計時 10 秒。
-    同一學生在 10 秒內的所有訊息（文字＋圖片）會合併成一筆處理。
+    將 LINE 事件加入緩衝區，並重新計時 30 秒。
+    同一學生在 30 秒內的所有訊息（文字＋圖片）會合併成一筆處理。
     """
     if not isinstance(event, MessageEvent):
         return
@@ -46,7 +61,7 @@ async def buffer_event(event):
         old_task.cancel()
 
     _pending_tasks[user_id] = asyncio.create_task(
-        _delayed_process(user_id, delay=10)
+        _delayed_process(user_id, delay=30)
     )
 
 
@@ -95,9 +110,14 @@ async def _process_batch(user_id: str, events: list):
         print(f"[Info] {student_name} 無有效訊息內容，略過")
         return
 
+    # 社交回應過濾
+    if _is_social_only(user_text, has_image=(image_bytes is not None)):
+        print(f"[Filter] {student_name} 的訊息為社交回應，略過處理")
+        return
+
     # 呼叫 AI
     print(f"[OpenAI] 開始處理 {student_name} 的提問（共 {len(events)} 則訊息）...")
-    ai_answer = await gemini_service.generate_answer(
+    ai_answer = await openai_service.generate_answer(
         image_bytes=image_bytes,
         user_text=user_text,
     )
