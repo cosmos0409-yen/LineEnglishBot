@@ -4,3 +4,7 @@ __pycache__/
 venv/
 env/
 .venv/
+
+# 資料備份與考卷樣本（含學生個資，勿上傳）
+backup/
+考卷例題/

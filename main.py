@@ -2,13 +2,14 @@ import asyncio
 import os
 import re
 import base64
+import hmac
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from linebot.v3.webhook import WebhookParser
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
 from dotenv import load_dotenv
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from services import line_service, openai_service, telegram_service, supabase_service
 
@@ -22,8 +23,11 @@ parser = WebhookParser(channel_secret)
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 
-# Jinja2 模板引擎
-templates = Environment(loader=FileSystemLoader("templates"))
+# Jinja2 模板引擎（autoescape 防止學生暱稱／訊息中的 HTML 在審核頁面被執行）
+templates = Environment(
+    loader=FileSystemLoader("templates"),
+    autoescape=select_autoescape(["html"]),
+)
 
 # ========== 30 秒訊息緩衝 ==========
 
@@ -193,7 +197,14 @@ async def review_page(ticket_id: str):
     return HTMLResponse(content=html)
 
 
-FAST_APPROVE_PASSWORD = "fang0220"
+# 快速通過密碼：只從環境變數讀取；未設定時快速通過功能停用（fail closed）
+FAST_APPROVE_PASSWORD = os.getenv("FAST_APPROVE_PASSWORD", "")
+
+
+def _check_fast_approve_password(candidate: str) -> bool:
+    if not FAST_APPROVE_PASSWORD or not candidate:
+        return False
+    return hmac.compare_digest(candidate.encode("utf-8"), FAST_APPROVE_PASSWORD.encode("utf-8"))
 
 
 async def _trigger_push_if_approved(ticket_id: str) -> tuple[dict, str]:
@@ -230,7 +241,7 @@ async def review_submit(
         return HTMLResponse(content=html)
 
     # 快速通過（密碼驗證）
-    if bypass_password == FAST_APPROVE_PASSWORD:
+    if _check_fast_approve_password(bypass_password):
         updated = await supabase_service.fast_approve(ticket_id, final_answer)
         if updated:
             question, msg = await _trigger_push_if_approved(ticket_id)

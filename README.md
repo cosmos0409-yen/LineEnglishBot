@@ -64,13 +64,14 @@ copy .env.example .env
 |------|------|---------|
 | `LINE_CHANNEL_SECRET` | 簽章驗證 | LINE Developers → Basic settings |
 | `LINE_CHANNEL_ACCESS_TOKEN` | 發送/接收訊息 | LINE Developers → Messaging API → Issue token |
-| `GEMINI_API_KEY` | AI 解答 | Google AI Studio |
+| `OPENAI_API_KEY` | AI 解答 | platform.openai.com → API Keys |
 | `TELEGRAM_BOT_TOKEN` | 導師通知 | @BotFather |
 | `TELEGRAM_CHAT_ID` | 導師群組 ID | 群組發訊後呼叫 `getUpdates` |
 | `SUPABASE_URL` | 資料庫 URL | Supabase Dashboard → Project Settings |
 | `SUPABASE_KEY` | service_role key | Supabase Dashboard → Settings → API Keys |
 | `APP_BASE_URL` | 審核頁面的公開 URL | Railway 部署後填入，本地用 `http://localhost:8000` |
 | `DEV_MODE` | 跳過 LINE 簽章驗證 | 開發時設 `true`，正式設 `false` |
+| `FAST_APPROVE_PASSWORD` | 審核頁「單人快速通過」密碼 | 自訂；未設定則停用快速通過，勿寫進程式碼 |
 
 ### 3. 建立資料庫
 
