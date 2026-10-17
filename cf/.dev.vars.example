@@ -1,0 +1,10 @@
+# 複製成 .dev.vars 供 `wrangler dev` 使用（.dev.vars 已被 git 忽略）
+# 本機模擬時 LINE 金鑰可用假值，scripts/simulate.mjs 會用同一組 secret 簽章
+LINE_CHANNEL_SECRET=dev-secret
+LINE_CHANNEL_ACCESS_TOKEN=dev-token
+OPENAI_API_KEY=your_openai_api_key_here
+
+# 本機模擬：把 LINE API 指向 simulate.mjs 啟動的假伺服器；正式環境不要設定
+LINE_API_BASE=http://127.0.0.1:8790
+LINE_DATA_BASE=http://127.0.0.1:8790
+BUFFER_SECONDS=5

@@ -8,3 +8,7 @@ env/
 # 資料備份與考卷樣本（含學生個資，勿上傳）
 backup/
 考卷例題/
+
+# 本機預覽設定與 wrangler 本機狀態
+.claude/
+.wrangler/

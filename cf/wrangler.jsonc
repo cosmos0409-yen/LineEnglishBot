@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "line-tutor",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+
+  // 每位學生一個 Durable Object，負責 30 秒訊息緩衝與批次處理
+  "exports": {
+    "StudentBuffer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "STUDENT_BUFFER", "class_name": "StudentBuffer" }]
+  },
+
+  "observability": { "enabled": true },
+
+  // 非機密設定；金鑰一律用 `wrangler secret put`（本機用 .dev.vars）
+  "vars": {
+    "BUFFER_SECONDS": "30",
+    "OPENAI_MODEL_IMAGE": "gpt-6.1-sol",
+    "OPENAI_MODEL_TEXT": "gpt-6-luna",
+    "OPENAI_REASONING_EFFORT": "medium",
+    "OPENAI_SERVICE_TIER": "flex"
+  }
+}

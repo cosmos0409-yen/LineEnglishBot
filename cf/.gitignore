@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+# 本機金鑰（範本見 .dev.vars.example）
+.dev.vars
+# `npm run types` 產生（約 1.6 萬行），各自在本機產生即可
+worker-configuration.d.ts
