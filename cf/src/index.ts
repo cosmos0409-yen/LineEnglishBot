@@ -1,4 +1,5 @@
 import { verifySignature } from "./line";
+import { deleteExpiredImages } from "./images";
 import type { BufferedMessage } from "./buffer";
 
 export { StudentBuffer } from "./buffer";
@@ -43,11 +44,17 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {
-      return Response.json({ service: "line-tutor", phase: 1 });
+      return Response.json({ service: "line-tutor", phase: 2 });
     }
     if (request.method === "POST" && url.pathname === "/webhook") {
       return handleWebhook(request, env);
     }
     return new Response("Not found", { status: 404 });
+  },
+
+  // 每天清除超過保存期限的照片（排程見 wrangler.jsonc 的 triggers.crons）
+  async scheduled(_controller, env): Promise<void> {
+    const deleted = await deleteExpiredImages(env);
+    console.log(JSON.stringify({ event: "images_cleanup", deleted }));
   },
 } satisfies ExportedHandler<Env>;

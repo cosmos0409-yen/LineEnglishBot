@@ -10,11 +10,12 @@
 - 本機模擬： `SIM_IMAGE_DIR=<jpg 資料夾> node scripts/simulate.mjs`（假 LINE API 和簽章 webhook）
 - 測試：     `npm test`
 - 型別檢查： `npm run typecheck`
+- 資料庫：   `npx wrangler d1 migrations apply DB --local`（`IMAGES_DB` 同理；遠端用 `--remote`）
 - 部署：     `npm run deploy`（需先 `wrangler login`）
 
 ## Stack
 
-TypeScript + Cloudflare Workers + Durable Objects (SQLite)；規劃中：D1、R2。外部服務：LINE Messaging API、OpenAI Chat Completions、Telegram Bot。
+TypeScript + Cloudflare Workers + Durable Objects (SQLite) + D1（`DB` 主資料、`IMAGES_DB` 照片；不用 R2，因為要綁卡）。外部服務：LINE Messaging API、OpenAI Chat Completions、Telegram Bot。
 
 ## Structure
 
@@ -23,8 +24,12 @@ cf/src/index.ts    — Worker 入口：webhook 驗簽、轉交 Durable Object
 cf/src/buffer.ts   — StudentBuffer DO：每位學生 30 秒緩衝與批次處理（alarm）
 cf/src/openai.ts   — 產生草稿（Structured Outputs、Flex 方案退回標準方案）
 cf/src/prompt.ts   — 解題 Prompt（唯一來源）
-cf/src/text.ts     — 純函式：句號清理、社交回應過濾、base64
-cf/scripts/        — 本機模擬器
+cf/src/db.ts       — D1 主資料：提問、對話紀錄、前文
+cf/src/images.ts   — 照片切塊存 D1、讀回、過期清除
+cf/src/telegram.ts — 導師通知（HTML 跳脫）
+cf/src/text.ts     — 純函式：句號清理、社交回應過濾、跳脫、分段、base64
+cf/migrations/     — main/（DB）、images/（IMAGES_DB）
+cf/scripts/        — 本機模擬器（假 LINE、假 Telegram）
 main.py, services/, templates/ — Python 舊版，Phase 6 移除前只做必要修補
 doc/               — 計畫、交接手冊、Prompt 說明
 ```

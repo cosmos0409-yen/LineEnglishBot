@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
 import { verifySignature } from "../src/line";
-import { bytesToBase64, cleanAnswer, isSocialOnly } from "../src/text";
+import { bytesToBase64, cleanAnswer, escapeHtml, isSocialOnly, splitText } from "../src/text";
 
 describe("verifySignature", () => {
   const secret = "dev-secret";
@@ -26,6 +26,30 @@ describe("cleanAnswer", () => {
   it("刪除行尾句號、行中句號改換行，英文句點保留", () => {
     const input = "8. D scarce（稀少的）。To be frank 是固定說法。\nI'm recovering from the flu.\n答案是 A。";
     expect(cleanAnswer(input)).toBe("8. D scarce（稀少的）\nTo be frank 是固定說法\nI'm recovering from the flu.\n答案是 A");
+  });
+  it("移除行首多餘空白，保留空行", () => {
+    expect(cleanAnswer("3. D grocery\n grocery 是名詞\n\n  例句")).toBe("3. D grocery\ngrocery 是名詞\n\n例句");
+  });
+});
+
+describe("escapeHtml", () => {
+  it("跳脫 & < > \"", () => {
+    expect(escapeHtml(`<b>"A&B"</b>`)).toBe("&lt;b&gt;&quot;A&amp;B&quot;&lt;/b&gt;");
+    expect(escapeHtml(null)).toBe("");
+  });
+});
+
+describe("splitText", () => {
+  it("每段不超過上限、內容不遺失", () => {
+    const text = Array.from({ length: 200 }, (_, i) => `第${i}行 ${"x".repeat(40)}`).join("\n");
+    const chunks = splitText(text, 1000);
+    expect(chunks.length).toBeGreaterThan(5);
+    expect(chunks.every((c) => c.length <= 1000)).toBe(true);
+    expect(chunks.join("\n")).toBe(text);
+  });
+  it("單行超長時硬切", () => {
+    const chunks = splitText("y".repeat(2500), 1000);
+    expect(chunks.map((c) => c.length)).toEqual([1000, 1000, 500]);
   });
 });
 

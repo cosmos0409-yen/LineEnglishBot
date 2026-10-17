@@ -6,6 +6,9 @@ export function cleanAnswer(text: string): string {
     .split("\n")
     .map((line) => line.replace(/。+\s*$/u, "").replace(/。+\s*(?=\S)/gu, "\n"))
     .join("\n")
+    .split("\n")
+    .map((line) => line.replace(/^[ \t]+/, ""))
+    .join("\n")
     .trim();
 }
 
@@ -25,6 +28,41 @@ export function isSocialOnly(text: string | null, hasImage: boolean): boolean {
   if (hasImage || text === null) return false;
   const core = text.replace(NOISE_RE, "");
   return core === "" || SOCIAL_RE.test(core);
+}
+
+/** 跳脫 HTML 特殊字元（Telegram HTML 模式、審核頁共用）。 */
+export function escapeHtml(text: string | null | undefined): string {
+  return (text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** 依換行切段，每段不超過 size 字；單行過長時硬切。 */
+export function splitText(text: string, size: number): string[] {
+  const chunks: string[] = [];
+  let current = "";
+  for (let line of text.split("\n")) {
+    while (line.length > size) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      chunks.push(line.slice(0, size));
+      line = line.slice(size);
+    }
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > size) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [""];
+}
+
+/** 截短顯示用文字。 */
+export function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 /** Uint8Array → base64（分段處理，避免大圖片超過函式參數上限）。 */

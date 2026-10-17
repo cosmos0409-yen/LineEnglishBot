@@ -1,6 +1,7 @@
-// 本機模擬：啟動假的 LINE API（暱稱、圖片下載），並送出簽章過的 webhook 給 `wrangler dev`。
-// 用法：SIM_IMAGE_DIR=<放 jpg 的資料夾> node scripts/simulate.mjs
-// 結果看 wrangler dev 的 Log（event: draft_ready / batch_skipped_*）。
+// 本機模擬：啟動假的 LINE API（暱稱、圖片下載）與假的 Telegram API，並送出簽章過的 webhook 給 `wrangler dev`。
+// 用法（PowerShell）：$env:SIM_IMAGE_DIR="<放 jpg 的資料夾>"; node scripts/simulate.mjs
+// 結果：wrangler dev 的 Log（batch_processing / question_saved / telegram_notified），
+//      以及本程式最後印出的 Telegram 通知內容（假伺服器收到的）。
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
@@ -12,10 +13,19 @@ const IMAGE_DIR = process.env.SIM_IMAGE_DIR;
 const MOCK_PORT = 8790;
 
 const images = new Map(); // messageId → 檔名
+const telegramCalls = []; // 假 Telegram 收到的呼叫
 const RUN = Date.now().toString(36); // 每輪不同的學生 ID，避免和上一輪殘留的 alarm 混在一起
 const uid = (s) => `U_${RUN}_${s}`;
 
-const mock = createServer((req, res) => {
+function readBody(req) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+const mock = createServer(async (req, res) => {
   const profile = req.url.match(/^\/v2\/bot\/profile\/(.+)$/);
   if (profile) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -26,6 +36,19 @@ const mock = createServer((req, res) => {
   if (content && images.has(content[1]) && process.env.SIM_IMAGE_404 !== "1") {
     res.writeHead(200, { "content-type": "image/jpeg" });
     return res.end(readFileSync(join(IMAGE_DIR, images.get(content[1]))));
+  }
+  const tg = req.url.match(/^\/bot[^/]+\/(sendMessage|sendPhoto)$/);
+  if (tg) {
+    const body = await readBody(req);
+    if (tg[1] === "sendMessage") {
+      const json = JSON.parse(body.toString("utf8"));
+      telegramCalls.push({ method: "sendMessage", text: json.text, parseMode: json.parse_mode, buttons: json.reply_markup?.inline_keyboard?.[0] ?? [] });
+    } else {
+      const caption = body.toString("utf8").match(/name="caption"\r\n\r\n([\s\S]*?)\r\n--/)?.[1];
+      telegramCalls.push({ method: "sendPhoto", caption, bytes: body.length });
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ ok: true, result: {} }));
   }
   res.writeHead(404);
   res.end();
@@ -64,11 +87,27 @@ async function send(events, { badSignature = false } = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  // SIM_SKIP_IMAGES=1：對已部署的 Worker 測試時使用（雲端連不到本機的假 LINE 伺服器）
+  // SIM_SKIP_IMAGES=1：對已部署的 Worker 測試時使用（雲端連不到本機的假伺服器）
   const skipImages = process.env.SIM_SKIP_IMAGES === "1";
   if (!IMAGE_DIR && !skipImages) throw new Error("請設定 SIM_IMAGE_DIR，或設 SIM_SKIP_IMAGES=1");
   await new Promise((r) => mock.listen(MOCK_PORT, "127.0.0.1", r));
   const results = {};
+  // SIM_SCENARIO：all（預設）／bigimage（>1 MB 照片，驗證切塊）／fail（單則文字，搭配故意設錯的模型驗證 AI 最終失敗）
+  const scenario = process.env.SIM_SCENARIO || "all";
+  if (scenario === "bigimage") {
+    results.big = await send([image(uid("H"), process.env.SIM_BIG_IMAGE || "big.jpg"), text(uid("H"), "第3題")]);
+    // 追問：驗證多塊照片能從 D1 正確讀回並當作前文照片
+    await sleep(Number(process.env.SIM_FOLLOWUP_DELAY_MS || 20000));
+    results.bigFollowup = await send([text(uid("H"), "那12題呢")]);
+  } else if (scenario === "fail") {
+    results.fail = await send([text(uid("I"), "affect 跟 effect 差在哪")]);
+  }
+  if (scenario !== "all") {
+    console.log(JSON.stringify({ run: RUN, scenario, webhookStatus: results }));
+    await sleep(Number(process.env.SIM_WAIT_MS || 60000));
+    mock.close();
+    return printTelegram();
+  }
 
   // S1：先傳文字、1 秒後傳圖片 → 應合併成一批，答 8. D scarce
   results.S1_text = await send([text(uid("A"), "第8題為什麼不是B")]);
@@ -77,13 +116,13 @@ async function main() {
     results.S1_image = await send([image(uid("A"), "xz_p1.jpg")]);
   }
 
-  // S2：純社交回應 → 應略過
+  // S2：純社交回應 → 應略過，不通知
   results.S2 = await send([text(uid("B"), "謝謝老師🙏🙏")]);
 
   // S3：只傳整張考卷 → need_more_info
   if (!skipImages) results.S3 = await send([image(uid("C"), "xn_p1.jpg")]);
 
-  // S4：課務問題 → non_question
+  // S4：課務問題 → non_question，Telegram 精簡通知 +「產生解答」按鈕
   results.S4 = await send([text(uid("D"), "老師明天要帶什麼？")]);
 
   // S5：LINE 重送同一事件 → 只算一則
@@ -97,11 +136,30 @@ async function main() {
   // S7：LINE 後台「驗證」按鈕（空 events）→ 200
   results.S7_verify = await send([]);
 
-  console.log(JSON.stringify({ webhookStatus: results }));
-  // 等緩衝時間＋AI 回應；假 LINE 伺服器要開著讓 Worker 下載圖片
-  const waitMs = Number(process.env.SIM_WAIT_MS || 60000);
-  await sleep(waitMs);
+  // S8：先傳考卷問 29 題，等第一批處理完再追問「那25呢」→ 應從前文補上照片，答 25. D
+  if (!skipImages) {
+    results.S8_first = await send([image(uid("G"), "xz_p2.jpg"), text(uid("G"), "29")]);
+    await sleep(Number(process.env.SIM_FOLLOWUP_DELAY_MS || 20000));
+    results.S8_followup = await send([text(uid("G"), "那25呢")]);
+  }
+
+  console.log(JSON.stringify({ run: RUN, webhookStatus: results }));
+  // 等緩衝時間＋AI 回應；假伺服器要開著讓 Worker 下載圖片、送 Telegram
+  await sleep(Number(process.env.SIM_WAIT_MS || 60000));
   mock.close();
+  printTelegram();
+}
+
+function printTelegram() {
+  console.log(`\n===== 假 Telegram 收到 ${telegramCalls.length} 次呼叫 =====`);
+  for (const c of telegramCalls) {
+    if (c.method === "sendPhoto") {
+      console.log(`[sendPhoto] ${c.caption} (${Math.round(c.bytes / 1024)} KB)`);
+    } else {
+      const buttons = c.buttons.map((b) => `${b.text} → ${b.url}`).join(" | ");
+      console.log(`[sendMessage parse_mode=${c.parseMode}]\n${c.text}\n  按鈕：${buttons || "（無）"}\n`);
+    }
+  }
 }
 
 main().catch((e) => {

@@ -8,3 +8,8 @@ OPENAI_API_KEY=your_openai_api_key_here
 LINE_API_BASE=http://127.0.0.1:8790
 LINE_DATA_BASE=http://127.0.0.1:8790
 BUFFER_SECONDS=5
+
+# Telegram：本機預設送到 simulate.mjs 的假伺服器；要實際發到測試群組時，改成真的 token 與群組 ID 並移除 TELEGRAM_API_BASE
+TELEGRAM_BOT_TOKEN=dev-bot-token
+TELEGRAM_CHAT_ID=-100000000
+TELEGRAM_API_BASE=http://127.0.0.1:8790

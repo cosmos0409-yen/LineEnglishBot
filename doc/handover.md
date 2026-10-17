@@ -1,84 +1,74 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-17　目前階段：**Phase 1（POC）完成，等 Telegram 測試群組後開始 Phase 2**
+> 最後更新：2026-10-17　目前階段：**Phase 2 本機完成；等 Telegram 測試群組 ID 才能部署與實測**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
 ## 1. 已完成（Done）
 
-- **Python 舊版安全修補**（2026-10-02，commit `6c76a8e`）：快速通過密碼改讀環境變數、審核頁 autoescape、Telegram 改 HTML 跳脫並自動分段
-- **資料備份**：`backup/supabase-questions-20261002.json`（146 筆、35 張照片，已驗證；git 已忽略）
-- **Phase 1 本機 POC**（`cf/`，尚未 commit、尚未部署）：
-  - `src/index.ts`：`GET /` 健康檢查；`POST /webhook` 驗證 LINE 簽章後，依 userId 交給 Durable Object
-  - `src/buffer.ts`：`StudentBuffer`（SQLite DO）負責 30 秒緩衝，`alarm()` 依序做社交過濾、取暱稱、下載圖片、呼叫 OpenAI，結果寫 Log
-    - 同一事件重送會自動去重（`event_id UNIQUE`）
-    - 只處理快照、成功後才刪除；失敗由 alarm 自動重試，訊息不遺失
-    - 圖片下載失敗會丟例外重試，只有最後一次重試才不帶圖片繼續
-  - `src/openai.ts`：有圖片用 `OPENAI_MODEL_IMAGE`，沒圖片用 `OPENAI_MODEL_TEXT`；Structured Outputs；Flex 遇 429 改用標準方案重試一次
-  - `src/text.ts`：中文句號清理、社交回應過濾（允許 emoji）、base64
-  - `src/prompt.ts`：Prompt v2（之後以此為準）
-  - `scripts/simulate.mjs`：假 LINE API ＋ 簽章 webhook 的本機模擬器
+- **Python 舊版安全修補**（commit `6c76a8e`）與 **Supabase 備份**（`backup/`，git 已忽略）
+- **Phase 1 POC**（已部署 https://line-tutor.cosmos0409.workers.dev，目前跑的是 Phase 1 版本）
+  - webhook 驗簽 → `StudentBuffer` DO 30 秒緩衝 → 下載圖片 → OpenAI 草稿；實測 CPU 全部在免費方案內
+- **Phase 2 核心流程**（本機完成，**尚未部署**）：
+  - D1 `DB`（`questions`、`messages`）與 D1 `IMAGES_DB`（照片切塊存放）；migration 在 `cf/migrations/{main,images}/`，**本機與遠端都已套用**
+  - 照片改存 D1：R2 要綁信用卡，使用者選擇不綁（決策 D9）。每天 03:00（台灣）cron 刪除 180 天前的照片
+  - `buffer.ts`：每一步都可重跑（訊息 event_id 去重、提問 batch_id 去重、已通知不重發）；AI 重試 6 次都失敗 → 存成 `ai_status='error'` 並通知老師
+  - 對話前後文：同一學生最近 60 分鐘、最多 8 則；本批沒照片但前文有 → 補上最近一張照片並改用圖片模型
+  - `telegram.ts`：題目通知（照片＋草稿＋給老師的備註＋「前往審核」按鈕）、非題目精簡通知（「產生解答」按鈕）、AI 失敗警告；全部 HTML 跳脫、長文分段
+  - 模擬器新增假 Telegram 伺服器，以及 `SIM_SCENARIO=bigimage|fail`
 
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
 |---|---|---|
-| TypeScript 型別檢查 | ✅ | `npm run typecheck` |
-| 單元測試 | ✅ 23/23 | `npm test`：簽章、句號清理、社交過濾、base64 |
-| 簽章錯誤回 401、空 events 回 200 | ✅ | 模擬器 S6、S7 |
-| 文字＋圖片 1 秒內連傳合併成一批 | ✅ | Log：batchSize 2、imageCount 1 |
-| LINE 重送去重 | ✅ | S5 兩次送同一事件，batchSize 1 |
-| 社交回應略過 | ✅ | 「謝謝老師🙏🙏」→ `batch_skipped_social` |
-| 失敗自動重試、不遺失 | ✅ | retryCount 0→4 遞增 |
-| 圖片下載失敗不硬做 | ✅ | `SIM_IMAGE_404=1` 時拋出「圖片下載失敗」重試 |
-| OpenAI 產生草稿（本機） | ✅ | 新 key：S1 合併後 sol 答「8. D scarce」、S3 need_more_info、S4 non_question，全部走 flex |
-| 部署 | ✅ | https://line-tutor.cosmos0409.workers.dev（2026-10-17；只設了隨機產生的測試用 LINE secret，沒有接任何真實 LINE 帳號） |
-| Worker CPU（webhook） | ✅ 0–1 ms | `wrangler tail`，上限 10 ms |
-| DO CPU（enqueue、alarm 不含圖片） | ✅ 0–1 ms | `wrangler tail`，上限 30 秒 |
-| DO CPU（圖片 base64） | ✅ 估計 17–30 ms／張 | Node 基準測試（446–797 KB 考卷照片），4 張約 120 ms |
-| 雲端 AI 草稿 | ✅ | 部署版：A（沒附圖）→ need_more_info、D → non_question、E → question，全部走 flex |
-| DO CPU（alarm 含 OpenAI 呼叫） | ✅ 4 ms | wall time 1.2–2.5 秒（大多在等 OpenAI，不算 CPU） |
+| 型別檢查、單元測試 | ✅ 27/27 | `npm run typecheck`、`npm test`（新增 escapeHtml、splitText、行首空白清理） |
+| 合併、去重、社交略過、簽章、驗證按鈕 | ✅ | 模擬器 S1–S7，結果與 Phase 1 相同 |
+| 寫入 D1 | ✅ | 6 筆提問的 kind、模型、通知狀態都正確；重送的訊息只存 1 筆 |
+| Telegram 通知內容 | ✅（假伺服器） | 題目、需要補資訊、非題目、AI 失敗四種格式都正確，按鈕網址正確 |
+| 對話前後文 | ✅ | 傳考卷問 29 → 20 秒後問「那25呢」→ 自動補上照片，sol 答「25. D restoring；to」（正解） |
+| 大照片切塊 | ✅ | 1.75 MB 照片切 2 塊，存回位元組數完全相同；追問「那12題呢」讀回後答「12. B gamble」 |
+| AI 最終失敗 | ✅ | 模型故意設錯：retryCount 0→6，接著存成 error 並發「⚠️ AI 處理失敗」 |
+| **實際發到 Telegram 測試群組** | ⬜ | 等群組 ID |
+| **部署 Phase 2 版本** | ⬜ | 等群組 ID（部署前需設定 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` secrets） |
 
-Python 舊版：程式仍在 repo，但沒有部署在任何地方。LINE Webhook 仍指向已停止的 Railway。
+Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停止的 Railway。
 
 ## 3. 下一步（Next）
 
-**Phase 1 已完成（Go）**：所有 CPU 用量都遠低於免費方案上限，繼續走 Cloudflare。
+**Phase 2 剩餘**：
+1. 👤 在測試群組傳 `/start@AiTeacher0223bot`（bot 開著隱私模式，一般訊息收不到）→ 用 getUpdates 取得群組 ID
+2. 👤 在 `cf/` 設定 secrets：`npx wrangler secret put TELEGRAM_BOT_TOKEN`、`npx wrangler secret put TELEGRAM_CHAT_ID`
+3. 部署 → 對部署版送文字情境，確認測試群組真的收到通知
+4. 本機把 `.dev.vars` 的 Telegram 改成真的 token 與測試群組 ID（移除 `TELEGRAM_API_BASE`），跑一次含照片的情境，確認照片通知
 
-**Phase 2 — 核心流程**（開工前 👤 建立 Telegram 測試群組，把現有 bot 加進去，並在群組裡傳一句話）：
-- D1：`questions`、`messages` 表與 migration；R2：照片，180 天生命週期規則
-- alarm 改為寫入 D1，並發 Telegram 通知（題目通知／非題目精簡通知，HTML 跳脫）
-- 對話前後文（60 分鐘、8 則、必要時補上上一張圖）
-- 重試 6 次都失敗：通知 Telegram，並存成「AI 失敗、待老師處理」
-
-對部署版測試：`SIM_WORKER_URL=https://line-tutor.cosmos0409.workers.dev`、`SIM_LINE_SECRET`＝`cf/.sim-secret` 的內容、`SIM_SKIP_IMAGES=1`
-
-**注意**：我的 Bash 讀不到使用者的 wrangler 登入資料，wrangler 指令一律在使用者的終端機分頁執行。
-
-**Phase 2**：D1（questions、messages）、R2（照片 180 天）、Telegram 通知（題目／精簡通知）、對話前後文。
+**Phase 3 — 審核與推播**：審核頁（§7.4 改善清單）、PIN 與裝置記憶（§7.3）、原子化審核、LINE 推播、重送、標已讀、`?generate=1` 補產生草稿、待審核清單。
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
 
-- 🚧 **OpenAI key 失效**：阻擋 AI 驗證與部署實測
-- ⚠️ alarm 重試 6 次都失敗後，訊息會留在 DO 裡，要等同一學生再傳訊息才會再處理，而且沒有任何通知。**Phase 2 必須補上**：最後一次失敗時通知 Telegram，並存成「AI 失敗、待老師處理」
-- ✅ `LAST_RETRY = 6` 已在部署版確認：alarm 的 retryCount 最大到 6
-- ⚠️ 本機 `.wrangler/state` 會保留舊的模擬資料與重試；不影響正式環境，需要時可刪除
-- 審核頁的改善清單見計畫文件 §7.4（Phase 3 實作）
+- 🚧 Telegram 測試群組 ID 尚未取得（目前 getUpdates 收到 0 筆）
+- ⚠️ Telegram 中途失敗時，alarm 重試會整組重發，可能重複收到照片或訊息（不影響資料正確性）
+- ⚠️ Telegram 在最後一次重試仍失敗時，該批會留在 DO 的 pending，等同一學生下次傳訊息才再處理，而且沒有其他通知管道
+- ⚠️ 照片 D1 免費上限 500 MB：依過去用量，180 天約 160 MB。用量變大時，改用 R2 或多開一個 D1
+- 本機 `cf/.wrangler/state` 保留模擬資料，需要時可刪除
 
 ## 5. 測試指南（Testing）
 
-以下為 PowerShell 寫法（使用者的終端機是 PowerShell 5.1，不支援 `&&`），都在 `cf/` 目錄內執行：
+PowerShell 寫法（使用者的終端機是 PowerShell 5.1，不支援 `&&`），都在 `cf/` 目錄內執行：
 
 ```powershell
 npm install; npm run types
 ```
 
 ```powershell
-Copy-Item .dev.vars.example .dev.vars   # 再填入 OPENAI_API_KEY；LINE 用假值即可
+Copy-Item .dev.vars.example .dev.vars   # 再填入 OPENAI_API_KEY；LINE、Telegram 預設送到假伺服器
 ```
 
 ```powershell
 npm run typecheck; npm test
+```
+
+```powershell
+npx wrangler d1 migrations apply DB --local; npx wrangler d1 migrations apply IMAGES_DB --local
 ```
 
 本機端對端模擬（開兩個終端機）：
@@ -88,9 +78,12 @@ npx wrangler dev --ip 127.0.0.1 --port 8787
 ```
 
 ```powershell
-$env:SIM_IMAGE_DIR="<放 xz_p1.jpg、xn_p1.jpg 的資料夾>"; node scripts/simulate.mjs
+$env:SIM_IMAGE_DIR="<放 xz_p1.jpg、xz_p2.jpg、xn_p1.jpg 的資料夾>"; node scripts/simulate.mjs
 ```
 
-- 結果看 wrangler dev 的 Log：`batch_processing`、`draft_ready`、`batch_skipped_*`
-- `SIM_IMAGE_404=1`：模擬圖片下載失敗
+- 程式最後會印出假 Telegram 收到的每一則通知；Worker Log 看 `batch_processing`、`question_saved`、`telegram_notified`
+- `$env:SIM_SCENARIO="bigimage"`：需要資料夾裡有 `big.jpg`（>1 MB）
+- `$env:SIM_SCENARIO="fail"`：搭配 `npx wrangler dev --var OPENAI_MODEL_TEXT:no-such-model`，約 3 分鐘
+- `$env:SIM_IMAGE_404="1"`：模擬 LINE 圖片下載失敗
+- 對部署版：設 `SIM_WORKER_URL`、`SIM_LINE_SECRET`（`cf/.sim-secret` 的內容）、`SIM_SKIP_IMAGES=1`
 - 考卷圖片可用 PyMuPDF 從 `考卷例題/` 的 PDF 轉成 150 dpi JPG

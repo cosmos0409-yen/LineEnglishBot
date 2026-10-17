@@ -1,28 +1,53 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "line-tutor",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-10-01",
-
-  // 每位學生一個 Durable Object，負責 30 秒訊息緩衝與批次處理
-  "exports": {
-    "StudentBuffer": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    }
-  },
-  "durable_objects": {
-    "bindings": [{ "name": "STUDENT_BUFFER", "class_name": "StudentBuffer" }]
-  },
-
-  "observability": { "enabled": true },
-
-  // 非機密設定；金鑰一律用 `wrangler secret put`（本機用 .dev.vars）
-  "vars": {
-    "BUFFER_SECONDS": "30",
-    "OPENAI_MODEL_IMAGE": "gpt-6.1-sol",
-    "OPENAI_MODEL_TEXT": "gpt-6-luna",
-    "OPENAI_REASONING_EFFORT": "medium",
-    "OPENAI_SERVICE_TIER": "flex"
-  }
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "line-tutor",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	// 每位學生一個 Durable Object，負責 30 秒訊息緩衝與批次處理
+	"exports": {
+		"StudentBuffer": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "STUDENT_BUFFER",
+				"class_name": "StudentBuffer"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	// 每天台灣時間 03:00 清除 180 天前的照片
+	"triggers": {
+		"crons": ["0 19 * * *"]
+	},
+	// 非機密設定；金鑰與 Telegram 群組 ID 一律用 `wrangler secret put`（本機用 .dev.vars）
+	"vars": {
+		"APP_BASE_URL": "https://line-tutor.cosmos0409.workers.dev",
+		"BUFFER_SECONDS": "30",
+		"IMAGE_RETENTION_DAYS": "180",
+		"OPENAI_MODEL_IMAGE": "gpt-6.1-sol",
+		"OPENAI_MODEL_TEXT": "gpt-6-luna",
+		"OPENAI_REASONING_EFFORT": "medium",
+		"OPENAI_SERVICE_TIER": "flex"
+	},
+	// 照片另存一個 D1（免費方案每個 D1 上限 500 MB），不和主資料庫搶空間；R2 需綁信用卡所以不用
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "line-tutor",
+			"database_id": "d8f63653-7f9f-4727-be30-59e065fa5b92",
+			"migrations_dir": "migrations/main"
+		},
+		{
+			"binding": "IMAGES_DB",
+			"database_name": "line-tutor-images",
+			"database_id": "d12f292e-fdbe-4111-9fd0-8f8e43f4d562",
+			"migrations_dir": "migrations/images"
+		}
+	]
 }
