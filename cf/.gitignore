@@ -7,3 +7,4 @@ worker-configuration.d.ts
 # 暫時存放要上傳的測試 secrets
 *.secrets.json
 .sim-secret
+.dev.vars.*backup

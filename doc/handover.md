@@ -1,15 +1,14 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-17　目前階段：**Phase 2 本機完成；等 Telegram 測試群組 ID 才能部署與實測**
+> 最後更新：2026-10-17　目前階段：**Phase 2 完成（已部署、已實測發到 Telegram 測試群組），下一步 Phase 3**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
 ## 1. 已完成（Done）
 
 - **Python 舊版安全修補**（commit `6c76a8e`）與 **Supabase 備份**（`backup/`，git 已忽略）
-- **Phase 1 POC**（已部署 https://line-tutor.cosmos0409.workers.dev，目前跑的是 Phase 1 版本）
-  - webhook 驗簽 → `StudentBuffer` DO 30 秒緩衝 → 下載圖片 → OpenAI 草稿；實測 CPU 全部在免費方案內
-- **Phase 2 核心流程**（本機完成，**尚未部署**）：
+- **Phase 1 POC**：webhook 驗簽 → `StudentBuffer` DO 30 秒緩衝 → 下載圖片 → OpenAI 草稿；實測 CPU 全部在免費方案內
+- **Phase 2 核心流程**（已部署到 https://line-tutor.cosmos0409.workers.dev ，含每日 cron）：
   - D1 `DB`（`questions`、`messages`）與 D1 `IMAGES_DB`（照片切塊存放）；migration 在 `cf/migrations/{main,images}/`，**本機與遠端都已套用**
   - 照片改存 D1：R2 要綁信用卡，使用者選擇不綁（決策 D9）。每天 03:00（台灣）cron 刪除 180 天前的照片
   - `buffer.ts`：每一步都可重跑（訊息 event_id 去重、提問 batch_id 去重、已通知不重發）；AI 重試 6 次都失敗 → 存成 `ai_status='error'` 並通知老師
@@ -28,24 +27,21 @@
 | 對話前後文 | ✅ | 傳考卷問 29 → 20 秒後問「那25呢」→ 自動補上照片，sol 答「25. D restoring；to」（正解） |
 | 大照片切塊 | ✅ | 1.75 MB 照片切 2 塊，存回位元組數完全相同；追問「那12題呢」讀回後答「12. B gamble」 |
 | AI 最終失敗 | ✅ | 模型故意設錯：retryCount 0→6，接著存成 error 並發「⚠️ AI 處理失敗」 |
-| **實際發到 Telegram 測試群組** | ⬜ | 等群組 ID |
-| **部署 Phase 2 版本** | ⬜ | 等群組 ID（部署前需設定 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` secrets） |
+| 部署 Phase 2 | ✅ | 雲端 secrets：LINE（測試值）、OpenAI、`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`（測試群組「測試用」） |
+| 雲端 → 真實 Telegram | ✅ | 部署版 3 則文字情境，遠端 D1 的 `notified_at` 都有值 |
+| 含照片 → 真實 Telegram | ✅ | 本機改用真實 token 和測試群組跑完整情境：6 則通知第一次就成功（retryCount 0），沒有錯誤 |
 
 Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停止的 Railway。
 
 ## 3. 下一步（Next）
 
-**Phase 2 剩餘**：
-1. 👤 在測試群組傳 `/start@AiTeacher0223bot`（bot 開著隱私模式，一般訊息收不到）→ 用 getUpdates 取得群組 ID
-2. 👤 在 `cf/` 設定 secrets：`npx wrangler secret put TELEGRAM_BOT_TOKEN`、`npx wrangler secret put TELEGRAM_CHAT_ID`
-3. 部署 → 對部署版送文字情境，確認測試群組真的收到通知
-4. 本機把 `.dev.vars` 的 Telegram 改成真的 token 與測試群組 ID（移除 `TELEGRAM_API_BASE`），跑一次含照片的情境，確認照片通知
-
 **Phase 3 — 審核與推播**：審核頁（§7.4 改善清單）、PIN 與裝置記憶（§7.3）、原子化審核、LINE 推播、重送、標已讀、`?generate=1` 補產生草稿、待審核清單。
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
 
-- 🚧 Telegram 測試群組 ID 尚未取得（目前 getUpdates 收到 0 筆）
+- ⚠️ 雲端目前的 `TELEGRAM_CHAT_ID` 是**測試群組**；正式上線（Phase 5）要改成正式導師群組
+- ⚠️ 通知裡的「前往審核」「產生解答」按鈕目前會 404，審核頁在 Phase 3 實作
+- ℹ️ bot（@AiTeacher0223bot）開著隱私模式：查群組 ID 時要在群組傳 `/start@AiTeacher0223bot`
 - ⚠️ Telegram 中途失敗時，alarm 重試會整組重發，可能重複收到照片或訊息（不影響資料正確性）
 - ⚠️ Telegram 在最後一次重試仍失敗時，該批會留在 DO 的 pending，等同一學生下次傳訊息才再處理，而且沒有其他通知管道
 - ⚠️ 照片 D1 免費上限 500 MB：依過去用量，180 天約 160 MB。用量變大時，改用 R2 或多開一個 D1
