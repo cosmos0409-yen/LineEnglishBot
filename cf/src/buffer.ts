@@ -3,6 +3,7 @@ import { createQuestion, getHistory, getQuestionByBatch, markNotified, recordStu
 import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
 import { generateDraft, type DraftResult, type HistoryTurn } from "./openai";
+import { getQuestion, saveRegeneratedDraft } from "./review";
 import { notifyQuestion } from "./telegram";
 import { bytesToBase64, isSocialOnly } from "./text";
 
@@ -58,7 +59,14 @@ export class StudentBuffer extends DurableObject<Env> {
     const maxSeq = rows[rows.length - 1].seq;
     const messages = rows.map((r) => JSON.parse(r.body) as BufferedMessage);
 
-    await this.processBatch(userId, messages, alarmInfo?.retryCount ?? 0);
+    const retryCount = alarmInfo?.retryCount ?? 0;
+    try {
+      await this.processBatch(userId, messages, retryCount);
+    } catch (err) {
+      // 記下是哪一批、第幾次重試、錯在哪，再丟出讓 alarm 重試
+      console.log(JSON.stringify({ event: "batch_failed", userId, batchId: messages[0].webhookEventId, retryCount, error: String(err).slice(0, 500) }));
+      throw err;
+    }
 
     this.ctx.storage.sql.exec(`DELETE FROM pending WHERE seq <= ?`, maxSeq);
   }
@@ -171,6 +179,42 @@ export class StudentBuffer extends DurableObject<Env> {
     }
     if (missing > 0 && retryCount < LAST_RETRY) throw new Error(`圖片下載失敗 ${missing} 張，等待重試`);
     return images;
+  }
+
+  /** 審核頁讀照片（D1 照片轉換需要的 CPU 可能超過 Worker 的 10 ms，所以放在 DO 處理）。 */
+  async getImage(imageId: string): Promise<StoredImage | null> {
+    return loadImage(this.env, imageId);
+  }
+
+  /** 老師在審核頁按「產生 AI 草稿」：用原本的訊息、照片、前文重新產生，並強制作答。 */
+  async regenerate(questionId: string): Promise<boolean> {
+    const q = await getQuestion(this.env, questionId);
+    if (!q) return false;
+    const images = await this.loadQuestionImages(q);
+    const contextImage = q.context_image_id ? await loadImage(this.env, q.context_image_id) : null;
+    const first = await this.env.DB.prepare("SELECT MIN(ts) AS ts FROM messages WHERE question_id = ?").bind(q.id).first<{ ts: number | null }>();
+    const firstTs = first?.ts ?? q.created_at;
+    const history = await getHistory(this.env, q.student_line_id, firstTs, HISTORY_WINDOW_MS, HISTORY_LIMIT);
+    try {
+      const result = await generateDraft(this.env, {
+        text: q.question_text,
+        images: images.map((img) => ({ base64: bytesToBase64(img.bytes), contentType: img.contentType })),
+        history: history.map((h) => ({
+          role: h.role,
+          text: h.text,
+          hadImage: Boolean(h.imageId),
+          minutesAgo: Math.max(1, Math.round((firstTs - h.ts) / 60000)),
+        })),
+        contextImage: contextImage ? { base64: bytesToBase64(contextImage.bytes), contentType: contextImage.contentType } : null,
+        forceAnswer: true,
+      });
+      await saveRegeneratedDraft(this.env, q.id, result);
+      console.log(JSON.stringify({ event: "draft_regenerated", questionId: q.id, kind: result.draft.kind, ...result.meta }));
+      return true;
+    } catch (err) {
+      console.log(JSON.stringify({ event: "regenerate_failed", questionId: q.id, error: String(err).slice(0, 300) }));
+      return false;
+    }
   }
 
   private async loadQuestionImages(q: QuestionRow): Promise<StoredImage[]> {

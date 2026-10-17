@@ -13,3 +13,8 @@ BUFFER_SECONDS=5
 TELEGRAM_BOT_TOKEN=dev-bot-token
 TELEGRAM_CHAT_ID=-100000000
 TELEGRAM_API_BASE=http://127.0.0.1:8790
+
+# 審核頁 PIN 與 Cookie 簽章金鑰（本機測試值；正式環境用 wrangler secret put 設定，不要沿用）
+PIN_CHENG_JIE=111111
+PIN_TUTOR=222222
+SESSION_SECRET=dev-session-secret-change-me

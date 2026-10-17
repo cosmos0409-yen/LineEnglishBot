@@ -44,9 +44,12 @@ export interface DraftInput {
   history?: HistoryTurn[];
   /** 本批沒有照片時，從前文補上的最近一張照片 */
   contextImage?: InlineImage | null;
+  /** 老師在審核頁按「產生 AI 草稿」：不允許判成 non_question */
+  forceAnswer?: boolean;
 }
 
-const RESPONSE_FORMAT = {
+// 老師強制產生草稿時，kind 的選項拿掉 non_question：不只靠 Prompt，用 schema 保證一定會寫草稿
+const responseFormat = (forceAnswer: boolean) => ({
   type: "json_schema",
   json_schema: {
     name: "tutor_draft",
@@ -55,7 +58,7 @@ const RESPONSE_FORMAT = {
       type: "object",
       additionalProperties: false,
       properties: {
-        kind: { type: "string", enum: ["question", "need_more_info", "non_question"] },
+        kind: { type: "string", enum: forceAnswer ? ["question", "need_more_info"] : ["question", "need_more_info", "non_question"] },
         answer: { type: "string" },
         tutor_note: { type: "string" },
         confidence: { type: "string", enum: ["high", "medium", "low"] },
@@ -63,7 +66,7 @@ const RESPONSE_FORMAT = {
       required: ["kind", "answer", "tutor_note", "confidence"],
     },
   },
-};
+});
 
 const imagePart = (img: InlineImage) => ({
   type: "image_url",
@@ -78,6 +81,12 @@ function buildUserContent(input: DraftInput) {
   }
   // 只有圖片沒有文字時，仍要給模型一段文字，讓它判斷是否需要追問題號
   content.push({ type: "text", text: input.text ?? "（學生只傳了圖片，沒有附文字）" });
+  if (input.forceAnswer) {
+    content.push({
+      type: "text",
+      text: "（老師要求：請把這則訊息當成英文學習問題寫出回覆草稿，kind 只能是 question 或 need_more_info，不可以是 non_question）",
+    });
+  }
   return content;
 }
 
@@ -95,7 +104,7 @@ async function callOnce(env: Env, model: string, serviceTier: string | null, inp
   const body: Record<string, unknown> = {
     model,
     reasoning_effort: env.OPENAI_REASONING_EFFORT,
-    response_format: RESPONSE_FORMAT,
+    response_format: responseFormat(Boolean(input.forceAnswer)),
     messages: buildMessages(input),
   };
   if (serviceTier) body.service_tier = serviceTier;
