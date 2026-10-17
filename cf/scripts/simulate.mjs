@@ -64,20 +64,24 @@ async function send(events, { badSignature = false } = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  if (!IMAGE_DIR) throw new Error("請設定 SIM_IMAGE_DIR");
+  // SIM_SKIP_IMAGES=1：對已部署的 Worker 測試時使用（雲端連不到本機的假 LINE 伺服器）
+  const skipImages = process.env.SIM_SKIP_IMAGES === "1";
+  if (!IMAGE_DIR && !skipImages) throw new Error("請設定 SIM_IMAGE_DIR，或設 SIM_SKIP_IMAGES=1");
   await new Promise((r) => mock.listen(MOCK_PORT, "127.0.0.1", r));
   const results = {};
 
   // S1：先傳文字、1 秒後傳圖片 → 應合併成一批，答 8. D scarce
   results.S1_text = await send([text(uid("A"), "第8題為什麼不是B")]);
-  await sleep(1000);
-  results.S1_image = await send([image(uid("A"), "xz_p1.jpg")]);
+  if (!skipImages) {
+    await sleep(1000);
+    results.S1_image = await send([image(uid("A"), "xz_p1.jpg")]);
+  }
 
   // S2：純社交回應 → 應略過
   results.S2 = await send([text(uid("B"), "謝謝老師🙏🙏")]);
 
   // S3：只傳整張考卷 → need_more_info
-  results.S3 = await send([image(uid("C"), "xn_p1.jpg")]);
+  if (!skipImages) results.S3 = await send([image(uid("C"), "xn_p1.jpg")]);
 
   // S4：課務問題 → non_question
   results.S4 = await send([text(uid("D"), "老師明天要帶什麼？")]);

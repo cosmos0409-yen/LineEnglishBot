@@ -31,20 +31,23 @@
 | 社交回應略過 | ✅ | 「謝謝老師🙏🙏」→ `batch_skipped_social` |
 | 失敗自動重試、不遺失 | ✅ | retryCount 0→4 遞增 |
 | 圖片下載失敗不硬做 | ✅ | `SIM_IMAGE_404=1` 時拋出「圖片下載失敗」重試 |
-| **OpenAI 產生草稿** | ❌ 未驗證 | `.env` 的 OpenAI key 已失效（expired／invalidated） |
-| **部署與 CPU 用量實測** | ⬜ 未做 | 需要使用者先 `wrangler login` |
+| OpenAI 產生草稿（本機） | ✅ | 新 key：S1 合併後 sol 答「8. D scarce」、S3 need_more_info、S4 non_question，全部走 flex |
+| 部署 | ✅ | https://line-tutor.cosmos0409.workers.dev（2026-10-17；只設了隨機產生的測試用 LINE secret，沒有接任何真實 LINE 帳號） |
+| Worker CPU（webhook） | ✅ 0–1 ms | `wrangler tail`，上限 10 ms |
+| DO CPU（enqueue、alarm 不含圖片） | ✅ 0–1 ms | `wrangler tail`，上限 30 秒 |
+| DO CPU（圖片 base64） | ✅ 估計 17–30 ms／張 | Node 基準測試（446–797 KB 考卷照片），4 張約 120 ms |
+| **雲端 AI 草稿** | ⬜ | 等使用者設定 Cloudflare 的 `OPENAI_API_KEY` secret |
 
 Python 舊版：程式仍在 repo，但沒有部署在任何地方。LINE Webhook 仍指向已停止的 Railway。
 
 ## 3. 下一步（Next）
 
-**Phase 1 剩餘工作**（使用者先完成標 👤 的項目）：
-1. 👤 換發新的 OpenAI API key，填進 `.env`，並建議設定每月花費上限。key 有到期日的話，記得延長或改成不過期
-2. 👤 在 `cf/` 執行 `npx wrangler login`，在瀏覽器授權
-3. 👤 建立 Telegram 測試群組，把現有 bot 加進去（Phase 2 才用到，可以先做）
-4. 本機重跑模擬器，確認 AI 草稿（S1 應答 8. D scarce、S3 need_more_info、S4 non_question）
-5. 部署到 workers.dev，設定 secrets（使用者執行指令，金鑰不經過對話），用 Workers Logs 看每次請求的 CPU 時間
-   - Go/No-Go：Worker 每次請求 < 10 ms，DO alarm 遠低於 30 秒
+**Phase 1 剩餘工作**：
+1. 👤 在 `cf/` 執行 `npx wrangler secret put OPENAI_API_KEY`，在提示時貼上 key
+2. 對部署版重跑模擬器（`SIM_WORKER_URL`、`SIM_LINE_SECRET`＝`cf/.sim-secret`、`SIM_SKIP_IMAGES=1`），確認雲端 AI 草稿與 alarm CPU
+3. 👤 建立 Telegram 測試群組，把現有 bot 加進去（Phase 2 才用到）
+
+**注意**：我的 Bash 讀不到使用者的 wrangler 登入資料，wrangler 指令一律在使用者的終端機分頁執行。
 
 **Phase 2**：D1（questions、messages）、R2（照片 180 天）、Telegram 通知（題目／精簡通知）、對話前後文。
 
@@ -52,7 +55,7 @@ Python 舊版：程式仍在 repo，但沒有部署在任何地方。LINE Webhoo
 
 - 🚧 **OpenAI key 失效**：阻擋 AI 驗證與部署實測
 - ⚠️ alarm 重試 6 次都失敗後，訊息會留在 DO 裡，要等同一學生再傳訊息才會再處理，而且沒有任何通知。**Phase 2 必須補上**：最後一次失敗時通知 Telegram，並存成「AI 失敗、待老師處理」
-- ⚠️ `LAST_RETRY = 6` 依官方文件「最多重試 6 次」推定 retryCount 的最大值，部署後要用 Log 確認
+- ✅ `LAST_RETRY = 6` 已在部署版確認：alarm 的 retryCount 最大到 6
 - ⚠️ 本機 `.wrangler/state` 會保留舊的模擬資料與重試；不影響正式環境，需要時可刪除
 - 審核頁的改善清單見計畫文件 §7.4（Phase 3 實作）
 

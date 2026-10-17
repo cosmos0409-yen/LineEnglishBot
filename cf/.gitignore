@@ -4,3 +4,6 @@ node_modules/
 .dev.vars
 # `npm run types` 產生（約 1.6 萬行），各自在本機產生即可
 worker-configuration.d.ts
+# 暫時存放要上傳的測試 secrets
+*.secrets.json
+.sim-secret
