@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-17　目前階段：**Phase 1（POC）本機部分完成，等使用者完成 3 個前置動作才能部署實測**
+> 最後更新：2026-10-17　目前階段：**Phase 1（POC）完成，等 Telegram 測試群組後開始 Phase 2**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -36,16 +36,22 @@
 | Worker CPU（webhook） | ✅ 0–1 ms | `wrangler tail`，上限 10 ms |
 | DO CPU（enqueue、alarm 不含圖片） | ✅ 0–1 ms | `wrangler tail`，上限 30 秒 |
 | DO CPU（圖片 base64） | ✅ 估計 17–30 ms／張 | Node 基準測試（446–797 KB 考卷照片），4 張約 120 ms |
-| **雲端 AI 草稿** | ⬜ | 等使用者設定 Cloudflare 的 `OPENAI_API_KEY` secret |
+| 雲端 AI 草稿 | ✅ | 部署版：A（沒附圖）→ need_more_info、D → non_question、E → question，全部走 flex |
+| DO CPU（alarm 含 OpenAI 呼叫） | ✅ 4 ms | wall time 1.2–2.5 秒（大多在等 OpenAI，不算 CPU） |
 
 Python 舊版：程式仍在 repo，但沒有部署在任何地方。LINE Webhook 仍指向已停止的 Railway。
 
 ## 3. 下一步（Next）
 
-**Phase 1 剩餘工作**：
-1. 👤 在 `cf/` 執行 `npx wrangler secret put OPENAI_API_KEY`，在提示時貼上 key
-2. 對部署版重跑模擬器（`SIM_WORKER_URL`、`SIM_LINE_SECRET`＝`cf/.sim-secret`、`SIM_SKIP_IMAGES=1`），確認雲端 AI 草稿與 alarm CPU
-3. 👤 建立 Telegram 測試群組，把現有 bot 加進去（Phase 2 才用到）
+**Phase 1 已完成（Go）**：所有 CPU 用量都遠低於免費方案上限，繼續走 Cloudflare。
+
+**Phase 2 — 核心流程**（開工前 👤 建立 Telegram 測試群組，把現有 bot 加進去，並在群組裡傳一句話）：
+- D1：`questions`、`messages` 表與 migration；R2：照片，180 天生命週期規則
+- alarm 改為寫入 D1，並發 Telegram 通知（題目通知／非題目精簡通知，HTML 跳脫）
+- 對話前後文（60 分鐘、8 則、必要時補上上一張圖）
+- 重試 6 次都失敗：通知 Telegram，並存成「AI 失敗、待老師處理」
+
+對部署版測試：`SIM_WORKER_URL=https://line-tutor.cosmos0409.workers.dev`、`SIM_LINE_SECRET`＝`cf/.sim-secret` 的內容、`SIM_SKIP_IMAGES=1`
 
 **注意**：我的 Bash 讀不到使用者的 wrangler 登入資料，wrangler 指令一律在使用者的終端機分頁執行。
 

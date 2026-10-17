@@ -37,6 +37,7 @@ doc/               — 計畫、交接手冊、Prompt 說明
 - 所有顯示學生內容的地方都要 HTML 跳脫（審核頁、Telegram HTML 訊息）。
 - 圖片下載失敗不可「少了圖片照樣解題」，要讓 alarm 重試。
 - 模型 ID、API 參數、Cloudflare 設定鍵要查官方文件確認，不憑記憶。
+- Claude 的 Bash 讀不到使用者的 wrangler 登入資料：deploy、secret、tail 這類 wrangler 遠端指令改在使用者的終端機分頁執行（PowerShell 5.1，不支援 `&&`）。
 
 ## Further Reading
 

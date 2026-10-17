@@ -1,6 +1,6 @@
 # Cloudflare 改寫計畫（Railway → Cloudflare Workers）
 
-> 建立：2026-10-02　狀態：**Phase 1 進行中**，進度見 [handover.md](handover.md)
+> 建立：2026-10-02　狀態：**Phase 1 完成，下一步 Phase 2**，進度見 [handover.md](handover.md)
 
 ## 1. 背景與目標
 
