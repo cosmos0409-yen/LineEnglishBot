@@ -52,7 +52,16 @@ pre.final{white-space:pre-wrap;font:inherit;margin:8px 0}
 .item-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.item-text{margin:6px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .approvals{font-size:.88rem;color:var(--muted)}
 .count{display:inline-block;min-width:1.6em;padding:0 6px;border-radius:999px;background:var(--primary);color:var(--primary-text);font-size:.9rem;text-align:center}
-.empty{color:var(--muted)}
+.empty{color:var(--muted);display:flex;align-items:center}
+.ic{display:inline-block;flex-shrink:0;vertical-align:-3px;margin-right:.35em}
+.primary,.secondary,.link,.back,.flash,.who-name{display:inline-flex;align-items:center;justify-content:center}
+.primary{display:flex}.flash{display:flex;justify-content:flex-start}.flash .ic{margin-top:1px}
+.card h2,.card.note b{display:flex;align-items:center}
+.approvals{display:inline-flex;flex-wrap:wrap;gap:4px 14px}
+.approver{display:inline-flex;align-items:center}.approver.done{color:var(--ok)}
+.photos img,.card a>img{min-height:160px;background:var(--line)}
+.who-name .muted{margin-left:.35em}
+.msg .ic,.item-text .ic,.hint .ic{color:var(--muted)}
 `;
 
 export const APP_JS = `

@@ -1,4 +1,5 @@
 // Telegram 通知：所有動態內容都經過 escapeHtml；圖片 caption 為純文字（不設 parse_mode）
+// 不用 Emoji：以粗體標題與文字標籤分段（Telegram 無法顯示自訂線條圖示）
 import type { QuestionRow } from "./db";
 import type { StoredImage } from "./images";
 import { escapeHtml, splitText, truncate } from "./text";
@@ -54,34 +55,35 @@ function reviewUrl(env: Env, q: QuestionRow, generate = false): string {
 /**
  * 依提問狀態發通知：
  * - AI 失敗：警告，請老師直接處理
- * - 非英文問題：一行精簡通知 +「產生解答」按鈕
+ * - 非英文問題：精簡通知 +「產生解答」按鈕
  * - 題目／需要補資訊：照片（若有）＋ AI 草稿 + 給老師的備註 +「前往審核」按鈕
  */
 export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredImage[]): Promise<void> {
   const name = escapeHtml(q.student_name);
-  const questionLine = q.question_text ? `📝 ${escapeHtml(q.question_text)}` : "📷 （只有照片）";
+  const questionLine = q.question_text ? `問題：${escapeHtml(q.question_text)}` : "問題：（只傳了照片）";
+  const photoCaption = (i: number) => `${q.student_name} 的照片（${i + 1}/${images.length}）`;
 
   if (q.ai_status === "error") {
-    for (const [i, img] of images.entries()) await sendPhoto(env, img, `📷 ${q.student_name}（${i + 1}/${images.length}）`);
-    await sendMessage(env, `⚠️ <b>AI 處理失敗</b>｜${name}\n${questionLine}\n\n請老師直接處理`, [{ text: "📝 前往審核", url: reviewUrl(env, q) }]);
+    for (const [i, img] of images.entries()) await sendPhoto(env, img, photoCaption(i));
+    await sendMessage(env, `<b>AI 處理失敗｜${name}</b>\n${questionLine}\n\n請老師直接處理`, [{ text: "前往審核", url: reviewUrl(env, q) }]);
     return;
   }
 
   if (q.kind === "non_question") {
-    const preview = escapeHtml(truncate(q.question_text ?? "（只有照片）", 50));
-    await sendMessage(env, `💬 <b>${name}</b>：${preview}\n<i>判斷為非英文問題，未產生草稿</i>`, [
-      { text: "🤖 產生解答", url: reviewUrl(env, q, true) },
+    const preview = escapeHtml(truncate(q.question_text ?? "（只傳了照片）", 50));
+    await sendMessage(env, `<b>非英文問題｜${name}</b>\n${preview}\n<i>未產生草稿</i>`, [
+      { text: "產生解答", url: reviewUrl(env, q, true) },
     ]);
     return;
   }
 
-  for (const [i, img] of images.entries()) await sendPhoto(env, img, `📷 ${q.student_name}（${i + 1}/${images.length}）`);
+  for (const [i, img] of images.entries()) await sendPhoto(env, img, photoCaption(i));
 
   const label = q.kind === "need_more_info" ? "（需要學生補資訊）" : "";
-  const contextLine = q.context_image_id ? "\n📎 AI 有參考學生前面傳的照片" : "";
-  const note = q.tutor_note && q.tutor_note !== "無" ? `\n\n📌 <b>給老師</b>：${escapeHtml(q.tutor_note)}` : "";
-  const header = `📩 <b>${name}</b> 的提問\n${questionLine}${contextLine}\n━━━━━━━━━━\n🤖 <b>AI 草稿</b>${label}\n`;
-  const button = [{ text: "📝 前往審核", url: reviewUrl(env, q) }];
+  const contextLine = q.context_image_id ? "\n<i>AI 有參考學生前面傳的照片</i>" : "";
+  const note = q.tutor_note && q.tutor_note !== "無" ? `\n\n<b>給老師</b>：${escapeHtml(q.tutor_note)}` : "";
+  const header = `<b>新提問｜${name}</b>\n${questionLine}${contextLine}\n──────────\n<b>AI 草稿</b>${label}\n`;
+  const button = [{ text: "前往審核", url: reviewUrl(env, q) }];
 
   const chunks = splitText(q.ai_answer ?? "", CHUNK_SIZE);
   for (const [i, chunk] of chunks.entries()) {
