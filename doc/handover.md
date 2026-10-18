@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-18　目前階段：**Phase 3 ＋ 學生分類已部署；等使用者用手機實測，之後進 Phase 4**
+> 最後更新：2026-10-18　目前階段：**Phase 4 進行中：已接上使用者自己的測試用 LINE 官方帳號，手機實測推播成功**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -27,13 +27,18 @@
   - `students.ts`：`students` 表以 LINE userId 為主鍵；老師可設定備註名稱與班級（可留空），學生改暱稱不影響
   - `/students` 學生清單、`/students/:id` 學生頁（設定備註＋完整提問紀錄）、`/queue?student=` 篩選
   - 清單、審核頁、Telegram 通知都改用備註名稱（沒設定就用 LINE 暱稱）
+- **非英文訊息分流**（使用者要求，遠端已套用 `0004_dismiss.sql`）：
+  - 待處理清單與學生的待處理數不含「AI 判斷為非英文、還沒人處理」的訊息；改放在清單下方的收合區
+  - 一鍵「不需回覆」（status `dismissed`，記錄 `dismissed_by`、`dismissed_at`）、全部標記、改回待處理；一般題目也可標記（例如已在 LINE 直接回了）
+- **Phase 4 接上真實 LINE**（2026-10-18）：使用者自己的測試用官方帳號，Webhook 指向 workers.dev；手機實測「我想要問第16提」直接通過並推播成功
+- **雲端測試資料已清除**：刪除 ID 含 `_` 的模擬學生（3 題、4 則訊息、3 位學生）；保留使用者手機的真實測試
 
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
 |---|---|---|
 | 型別檢查、單元測試 | ✅ 39/39 | `npm run typecheck`、`npm test`（Phase 3 新增 Cookie、PIN、html 跳脫、台灣時間、LINE 分則） |
-| 審核流程端對端 | ✅ 39/39（連跑兩次穩定；含學生分類 9 項） | `node scripts/review-flow.mjs`：登入／鎖定、CSRF、Origin、XSS、同時通過只推一次、推播失敗重送同 key、產生草稿、前文含老師解答 |
+| 審核流程端對端 | ✅ 47/47（連跑兩次穩定；含學生分類、不需回覆） | `node scripts/review-flow.mjs`：登入／鎖定、CSRF、Origin、XSS、同時通過只推一次、推播失敗重送同 key、產生草稿、前文含老師解答 |
 | 手機尺寸實際操作 | ✅ | 內建瀏覽器 375px：登入、清單、審核頁（照片、前文、還原、字數、直接通過） |
 | 雲端 Phase 3 | ✅ 冒煙測試 | `/` 回 phase 3、未登入 `/queue` → 303 登入頁、樣式檔 200；**PIN 尚未設定，目前誰都登不進去（fail closed）** |
 | 合併、去重、社交略過、簽章、驗證按鈕 | ✅ | 模擬器 S1–S7，結果與 Phase 1 相同 |
