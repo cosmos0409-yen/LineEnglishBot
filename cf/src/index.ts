@@ -15,7 +15,7 @@ import {
 import type { BufferedMessage } from "./buffer";
 import { deleteExpiredImages } from "./images";
 import { verifySignature } from "./line";
-import { loginPage, queuePage, reviewPage } from "./pages";
+import { loginPage, notFoundPage, queuePage, reviewPage } from "./pages";
 import { approve, deliver, getContextMessages, getQuestion, listQueue, markReadOnce } from "./review";
 import { APP_CSS, APP_JS } from "./static";
 
@@ -121,7 +121,7 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
   const parts = url.pathname.split("/").filter(Boolean); // review/:id[/action] 或 img/:id/:n
   const id = parts[1] ?? "";
   const q = await getQuestion(env, id);
-  if (!q) return page("<p>找不到這一題</p>", 404);
+  if (!q) return page(notFoundPage(role, csrf), 404);
 
   if (parts[0] === "img") {
     const which = parts[2] ?? "";

@@ -105,6 +105,16 @@ export function queuePage(role: Role, open: ReviewQuestion[], recent: ReviewQues
   return layout("待審核清單", body, role, csrf);
 }
 
+export function notFoundPage(role: Role, csrf: string): string {
+  const body = html`
+  <section class="card">
+    <h1>找不到這一題</h1>
+    <p>可能的原因：連結來自測試環境、這一題已被刪除，或網址不完整。</p>
+    <p><a href="/queue">回到待審核清單</a></p>
+  </section>`;
+  return layout("找不到這一題", body, role, csrf);
+}
+
 export interface ReviewPageData {
   role: Role;
   q: ReviewQuestion;
