@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-17　目前階段：**Phase 2 完成（已部署、已實測發到 Telegram 測試群組），下一步 Phase 3**
+> 最後更新：2026-10-18　目前階段：**Phase 3 本機完成並已部署；等使用者設定 PIN 並用手機實測**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -15,12 +15,22 @@
   - 對話前後文：同一學生最近 60 分鐘、最多 8 則；本批沒照片但前文有 → 補上最近一張照片並改用圖片模型
   - `telegram.ts`：題目通知（照片＋草稿＋給老師的備註＋「前往審核」按鈕）、非題目精簡通知（「產生解答」按鈕）、AI 失敗警告；全部 HTML 跳脫、長文分段
   - 模擬器新增假 Telegram 伺服器，以及 `SIM_SCENARIO=bigimage|fail`
+- **Phase 3 審核與推播**（已部署，version `3af8c517`；遠端已套用 `0002_review.sql`，已設 `SESSION_SECRET`）：
+  - `auth.ts`：PIN 登入、簽章 Cookie（365 天，換 PIN 自動登出）、同 IP 錯 5 次鎖 15 分鐘、CSRF token
+  - `review.ts`：原子化審核（單一 UPDATE … RETURNING）、推播（固定 retry key，重送不重複）、標已讀、待審核清單、前文
+  - `pages.ts`／`html.ts`／`static.ts`：登入頁、待審核清單、審核頁（§7.4 的 14 項改善），`html```` 自動跳脫、CSP、靜態檔依內容加版本號
+  - DO 新增 `getImage`、`regenerate`（照片轉換與重新產生的 CPU 放在 DO，不放在只有 10 ms 的 Worker）
+  - 老師按「產生 AI 草稿」時，schema 拿掉 non_question，保證一定寫出草稿
+  - 已送出的老師解答記成 `messages(role='teacher')`，之後的追問會帶入前文
 
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
 |---|---|---|
-| 型別檢查、單元測試 | ✅ 27/27 | `npm run typecheck`、`npm test`（新增 escapeHtml、splitText、行首空白清理） |
+| 型別檢查、單元測試 | ✅ 37/37 | `npm run typecheck`、`npm test`（Phase 3 新增 Cookie、PIN、html 跳脫、台灣時間、LINE 分則） |
+| 審核流程端對端 | ✅ 30/30（連跑兩次穩定） | `node scripts/review-flow.mjs`：登入／鎖定、CSRF、Origin、XSS、同時通過只推一次、推播失敗重送同 key、產生草稿、前文含老師解答 |
+| 手機尺寸實際操作 | ✅ | 內建瀏覽器 375px：登入、清單、審核頁（照片、前文、還原、字數、直接通過） |
+| 雲端 Phase 3 | ✅ 冒煙測試 | `/` 回 phase 3、未登入 `/queue` → 303 登入頁、樣式檔 200；**PIN 尚未設定，目前誰都登不進去（fail closed）** |
 | 合併、去重、社交略過、簽章、驗證按鈕 | ✅ | 模擬器 S1–S7，結果與 Phase 1 相同 |
 | 寫入 D1 | ✅ | 6 筆提問的 kind、模型、通知狀態都正確；重送的訊息只存 1 筆 |
 | Telegram 通知內容 | ✅（假伺服器） | 題目、需要補資訊、非題目、AI 失敗四種格式都正確，按鈕網址正確 |
@@ -35,12 +45,19 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 
 ## 3. 下一步（Next）
 
-**Phase 3 — 審核與推播**：審核頁（§7.4 改善清單）、PIN 與裝置記憶（§7.3）、原子化審核、LINE 推播、重送、標已讀、`?generate=1` 補產生草稿、待審核清單。
+**Phase 3 剩餘**：
+1. 👤 設定 PIN：在 `cf/` 執行 `npx wrangler secret put PIN_CHENG_JIE`、`npx wrangler secret put PIN_TUTOR`
+2. 👤 用手機從 Telegram 測試群組的「前往審核」按鈕進入 → 輸入 PIN → 審核（雲端 LINE 是測試金鑰，推播會顯示「推播失敗」，屬正常）
+
+**Phase 4 — 預演**：使用者開自己的測試用 LINE 官方帳號 → 換上真實 LINE 金鑰 → 兩位導師用手機實際走完「學生提問 → 審核 → 收到解答」。
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
 
 - ⚠️ 雲端目前的 `TELEGRAM_CHAT_ID` 是**測試群組**；正式上線（Phase 5）要改成正式導師群組
-- ⚠️ 通知裡的「前往審核」「產生解答」按鈕目前會 404，審核頁在 Phase 3 實作
+- ⚠️ 雲端 LINE 金鑰仍是測試值：推播與標已讀在 Phase 4 換上真實測試帳號前都會失敗
+- ⚠️ 老師對真正的非英文訊息強制「產生 AI 草稿」時，草稿可能不自然（例如「建議直接問老師」）；之後調整 Prompt
+- ⚠️ 本機所有請求的 IP 都是 `local`：跑完 review-flow（會觸發鎖定）後要清 `login_failures` 才能手動登入
+- ℹ️ 內建瀏覽器送表單時 Origin 是 `null`，所以 CSRF 改用 token；`Referrer-Policy` 用 `same-origin`（`no-referrer` 也會讓 Origin 變 null）
 - ℹ️ bot（@AiTeacher0223bot）開著隱私模式：查群組 ID 時要在群組傳 `/start@AiTeacher0223bot`
 - ⚠️ Telegram 中途失敗時，alarm 重試會整組重發，可能重複收到照片或訊息（不影響資料正確性）
 - ⚠️ Telegram 在最後一次重試仍失敗時，該批會留在 DO 的 pending，等同一學生下次傳訊息才再處理，而且沒有其他通知管道

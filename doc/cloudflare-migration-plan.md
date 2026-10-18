@@ -1,6 +1,6 @@
 # Cloudflare 改寫計畫（Railway → Cloudflare Workers）
 
-> 建立：2026-10-02　狀態：**Phase 2 完成，下一步 Phase 3**，進度見 [handover.md](handover.md)
+> 建立：2026-10-02　狀態：**Phase 3 已部署，等 PIN 設定與手機實測**，進度見 [handover.md](handover.md)
 
 ## 1. 背景與目標
 

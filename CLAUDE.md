@@ -8,6 +8,7 @@
 - 安裝：     `npm install && npm run types`
 - 本機開發： `npx wrangler dev --ip 127.0.0.1 --port 8787`（金鑰放 `cf/.dev.vars`，範本 `.dev.vars.example`）
 - 本機模擬： `SIM_IMAGE_DIR=<jpg 資料夾> node scripts/simulate.mjs`（假 LINE API 和簽章 webhook）
+- 審核測試： `node scripts/review-flow.mjs`（需 wrangler dev 開著；跑前先清 `login_failures`）
 - 測試：     `npm test`
 - 型別檢查： `npm run typecheck`
 - 資料庫：   `npx wrangler d1 migrations apply DB --local`（`IMAGES_DB` 同理；遠端用 `--remote`）
@@ -27,6 +28,9 @@ cf/src/prompt.ts   — 解題 Prompt（唯一來源）
 cf/src/db.ts       — D1 主資料：提問、對話紀錄、前文
 cf/src/images.ts   — 照片切塊存 D1、讀回、過期清除
 cf/src/telegram.ts — 導師通知（HTML 跳脫）
+cf/src/review.ts   — 審核、推播、標已讀、清單
+cf/src/auth.ts     — PIN、Cookie、鎖定、CSRF
+cf/src/pages.ts    — 審核介面 HTML（html.ts 自動跳脫、static.ts 的 CSS／JS）
 cf/src/text.ts     — 純函式：句號清理、社交回應過濾、跳脫、分段、base64
 cf/migrations/     — main/（DB）、images/（IMAGES_DB）
 cf/scripts/        — 本機模擬器（假 LINE、假 Telegram）
@@ -39,7 +43,8 @@ doc/               — 計畫、交接手冊、Prompt 說明
 - 金鑰與 PIN 一律放 Cloudflare Secrets／`.dev.vars`／`.env`，**不可寫進程式碼、文件或 commit**（repo 是公開的）。
 - `backup/`、`考卷例題/` 含學生個資，絕不可 commit 或外傳。
 - `cf/worker-configuration.d.ts` 由 `npm run types` 產生，改 `wrangler.jsonc` 後要重新產生，不要手改。
-- 所有顯示學生內容的地方都要 HTML 跳脫（審核頁、Telegram HTML 訊息）。
+- 所有顯示學生內容的地方都要 HTML 跳脫：審核頁一律用 `html```` 樣板，`raw()` 只能包程式自己產生的片段。
+- 需要登入的 POST 表單都要帶 `_csrf`；不要用 Origin 判斷（內嵌瀏覽器會送 null）。
 - 圖片下載失敗不可「少了圖片照樣解題」，要讓 alarm 重試。
 - 模型 ID、API 參數、Cloudflare 設定鍵要查官方文件確認，不憑記憶。
 - Claude 的 Bash 讀不到使用者的 wrangler 登入資料：deploy、secret、tail 這類 wrangler 遠端指令改在使用者的終端機分頁執行（PowerShell 5.1，不支援 `&&`）。
