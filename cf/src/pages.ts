@@ -23,10 +23,13 @@ export const FLASH: Record<string, { type: FlashType; text: string }> = {
   locked: { type: "error", text: "輸錯太多次，請 15 分鐘後再試" },
   logged_out: { type: "success", text: "已登出，請重新輸入 PIN" },
   saved: { type: "success", text: "已儲存學生資料" },
+  dismissed: { type: "success", text: "已標記為不需回覆" },
+  dismissed_all: { type: "success", text: "已把非英文訊息全部標記為不需回覆" },
+  reopened: { type: "success", text: "已改回待處理" },
 };
 
 const KIND_LABEL: Record<string, string> = { question: "題目", need_more_info: "需要補資訊", non_question: "非英文問題" };
-const STATUS_LABEL: Record<string, string> = { pending: "待審核", approved: "推播中", push_failed: "推播失敗", sent: "已送出" };
+const STATUS_LABEL: Record<string, string> = { pending: "待審核", approved: "推播中", push_failed: "推播失敗", sent: "已送出", dismissed: "已處理" };
 
 const csrfField = (token: string) => html`<input type="hidden" name="_csrf" value="${token}">`;
 
@@ -104,7 +107,15 @@ export interface QueueFilter {
   selected: StudentRow | null;
 }
 
-export function queuePage(role: Role, open: ReviewQuestion[], recent: ReviewQuestion[], csrf: string, filter: QueueFilter, now = Date.now()): string {
+export function queuePage(
+  role: Role,
+  lists: { open: ReviewQuestion[]; others: ReviewQuestion[]; recent: ReviewQuestion[] },
+  csrf: string,
+  filter: QueueFilter,
+  flashCode: string | null,
+  now = Date.now(),
+): string {
+  const { open, others, recent } = lists;
   const item = (q: ReviewQuestion) => html`
     <a class="item" href="/review/${q.id}">
       <div class="item-top">${kindBadge(q)} ${statusBadge(q)} <b>${nameOf(q)}</b> ${classBadge(q.student_class)} <span class="muted">${timeAgo(q.created_at, now)}</span></div>
@@ -127,10 +138,30 @@ export function queuePage(role: Role, open: ReviewQuestion[], recent: ReviewQues
     ? html`<h1>${studentLabel(filter.selected)} 的待處理 <span class="count">${open.length}</span></h1>
       <p class="links"><a href="/queue">看全部學生</a><a href="/students/${filter.selected.line_id}">${icon("users")}學生資料與完整紀錄</a></p>`
     : html`<h1>待處理 <span class="count">${open.length}</span></h1>`;
+  // 非英文訊息：預設收合、不算在待處理；每則可直接標記「不需回覆」，也可一次全部標記
+  const otherItem = (q: ReviewQuestion) => html`
+    <div class="item other">
+      <a class="item-link" href="/review/${q.id}">
+        <div class="item-top"><b>${nameOf(q)}</b> ${classBadge(q.student_class)} <span class="muted">${timeAgo(q.created_at, now)}</span></div>
+        <div class="item-text">${q.question_text ? q.question_text.slice(0, 60) : html`${icon("image")}只傳了照片`}</div>
+      </a>
+      <form method="post" action="/review/${q.id}/dismiss">${csrfField(csrf)}<input type="hidden" name="from" value="queue${selectedId ? `:${selectedId}` : ""}">
+        <button class="secondary small" type="submit">${icon("check")}不需回覆</button></form>
+    </div>`;
+  const othersSection = others.length
+    ? html`<details class="others">
+        <summary>非英文訊息 ${others.length} 則 <span class="muted">（打招呼、閒聊等，不算在待處理）</span></summary>
+        <form method="post" action="/queue/dismiss-others" class="bulk">${csrfField(csrf)}<input type="hidden" name="student" value="${selectedId}">
+          <button class="secondary" type="submit">${icon("check")}全部標記為不需回覆</button></form>
+        <div class="list">${others.map(otherItem)}</div>
+      </details>`
+    : "";
   const body = html`
+  ${flash(flashCode)}
   ${filterForm}
   ${heading}
   ${open.length === 0 ? html`<p class="empty">${icon("inbox")}目前沒有待處理的提問</p>` : html`<div class="list">${open.map(item)}</div>`}
+  ${othersSection}
   <h2>最近送出</h2>
   ${recent.length === 0 ? html`<p class="empty">還沒有送出的解答</p>` : html`<div class="list">${recent.map(item)}</div>`}`;
   return layout("待審核清單", body, role, csrf);
@@ -222,20 +253,27 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
       </details>`
     : "";
 
-  const done = q.status === "sent" || q.status === "approved" || q.status === "push_failed";
+  const done = q.status !== "pending";
   const myDone = role === "cheng_jie" ? q.approver_cheng_jie : q.approver_tutor;
   const needsDraft = q.ai_status === "error" || q.kind === "non_question" || !q.ai_answer;
+  const dismissForm = (cls: string, label: string) =>
+    html`<form method="post" action="/review/${q.id}/dismiss">${csrfField(csrf)}<button class="${cls}" type="submit">${icon("check")}${label}</button></form>`;
 
+  // 非英文訊息：最常見的處理是「不需回覆」，所以放在最上面；其實是題目時再產生草稿
   const generateForm =
     !done && (needsDraft || highlightGenerate)
-      ? html`<form method="post" action="/review/${q.id}/generate" class="card ${highlightGenerate ? "highlight" : ""}">${csrfField(csrf)}
+      ? html`<section class="card ${highlightGenerate ? "highlight" : ""}">
           <p>${q.ai_status === "error"
             ? html`${icon("alert")}AI 處理失敗（${q.ai_error ?? "原因不明"}）。可以重新產生，或直接在下方手寫解答。`
             : q.kind === "non_question"
-              ? "AI 判斷這則不是英文問題，所以沒有寫草稿。如果其實是題目，請按下方按鈕。"
+              ? "AI 判斷這則不是英文問題，所以沒有寫草稿。不需要回覆的話直接標記已處理；如果其實是題目，請產生 AI 草稿。"
               : "還沒有 AI 草稿。"}</p>
-          <button class="secondary" type="submit">${icon("wand")}${q.ai_answer ? "重新產生 AI 草稿" : "產生 AI 草稿"}</button>
-        </form>`
+          <div class="actions">
+            ${q.kind === "non_question" ? dismissForm("primary", "不需回覆，標記已處理") : ""}
+            <form method="post" action="/review/${q.id}/generate">${csrfField(csrf)}
+              <button class="secondary" type="submit">${icon("wand")}${q.ai_answer ? "重新產生 AI 草稿" : "產生 AI 草稿"}</button></form>
+          </div>
+        </section>`
       : "";
 
   const note = q.tutor_note && q.tutor_note !== "無" ? html`<div class="card note"><b>${icon("info")}AI 給老師的提醒</b><p>${q.tutor_note}</p></div>` : "";
@@ -245,6 +283,13 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
     action = html`<section class="card success">
       <h2>${icon("send")}已於 ${formatTaipei(q.sent_at ?? q.created_at)} 送出給學生</h2>
       <pre class="final">${q.final_answer}</pre></section>`;
+  } else if (q.status === "dismissed") {
+    const who = q.dismissed_by === "cheng_jie" || q.dismissed_by === "tutor" ? ROLE_LABEL[q.dismissed_by] : "老師";
+    action = html`<section class="card">
+      <h2>${icon("check")}已標記為不需回覆</h2>
+      <p class="muted">${who}・${formatTaipei(q.dismissed_at ?? q.created_at)}</p>
+      <form method="post" action="/review/${q.id}/reopen">${csrfField(csrf)}<button class="secondary" type="submit">${icon("undo")}改回待處理</button></form>
+    </section>`;
   } else if (q.status === "push_failed" || q.status === "approved") {
     action = html`<section class="card error">
       <h2>${q.status === "push_failed" ? html`${icon("alert")}審核完成，但 LINE 推播失敗` : html`${icon("clock")}審核完成，正在推播`}</h2>
@@ -268,7 +313,8 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
             ? html`<label class="check"><input type="checkbox" name="direct" value="1"> 直接通過（不等導師，馬上送給學生）</label>`
             : ""}
           <button class="primary" type="submit">${icon("check")}以${ROLE_LABEL[role]}身分通過</button>`}
-    </form>`;
+    </form>
+    ${q.kind === "non_question" ? "" : html`<div class="dismiss-row">${dismissForm("link", "不需回覆（例如已在 LINE 直接回了），標記已處理")}</div>`}`;
   }
 
   const body = html`

@@ -16,7 +16,7 @@ import type { BufferedMessage } from "./buffer";
 import { deleteExpiredImages } from "./images";
 import { verifySignature } from "./line";
 import { loginPage, notFoundPage, queuePage, reviewPage, studentPage, studentsPage } from "./pages";
-import { approve, deliver, getContextMessages, getQuestion, listQueue, markReadOnce } from "./review";
+import { approve, deliver, dismiss, dismissAllNonQuestions, getContextMessages, getQuestion, listQueue, markReadOnce, reopen } from "./review";
 import { APP_CSS, APP_JS } from "./static";
 import { CLASS_MAX, cleanField, getStudent, listStudentQuestions, listStudents, NAME_MAX, updateStudent } from "./students";
 
@@ -165,6 +165,20 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
     return back(map[outcome.reason]);
   }
   if (action === "resend") return back((await deliver(env, q.id)).ok ? "resend_ok" : "resend_failed");
+  if (action === "dismiss") {
+    const ok = await dismiss(env, q.id, role);
+    // 從清單直接標記時，學生還沒看過已讀：順手標已讀
+    if (ok) ctx.waitUntil(markReadOnce(env, q).catch(() => undefined));
+    console.log(JSON.stringify({ event: "dismiss", questionId: q.id, role, ok }));
+    // from = "queue" 或 "queue:<學生ID>"：標記完回到原本的清單
+    const from = String(form.get("from") ?? "");
+    if (from.startsWith("queue")) {
+      const student = from.slice("queue:".length);
+      return redirect(`/queue?${student ? `student=${encodeURIComponent(student)}&` : ""}m=${ok ? "dismissed" : "already_done"}`);
+    }
+    return back(ok ? "dismissed" : "already_done");
+  }
+  if (action === "reopen") return back((await reopen(env, q.id)) ? "reopened" : "already_done");
   if (action === "generate") {
     if (q.status !== "pending") return back("already_done");
     const ok = await env.STUDENT_BUFFER.getByName(q.student_line_id).regenerate(q.id);
@@ -220,7 +234,7 @@ export default {
       return redirect("/login?m=logged_out", { "Set-Cookie": clearSessionCookie() });
     }
 
-    const protectedPath = pathname === "/queue" || pathname === "/students" || ["/review/", "/img/", "/students/"].some((p) => pathname.startsWith(p));
+    const protectedPath = pathname === "/queue" || pathname === "/students" || ["/queue/", "/review/", "/img/", "/students/"].some((p) => pathname.startsWith(p));
     if (protectedPath) {
       const role = await currentRole(request, env);
       if (!role) {
@@ -230,12 +244,20 @@ export default {
       const csrf = await csrfToken(env, readCookie(request, SESSION_COOKIE) ?? "");
       if (pathname === "/queue") {
         const studentId = url.searchParams.get("student") || null;
-        const [{ open, recent }, students, selected] = await Promise.all([
+        const [lists, students, selected] = await Promise.all([
           listQueue(env, studentId),
           listStudents(env),
           studentId ? getStudent(env, studentId) : Promise.resolve(null),
         ]);
-        return page(queuePage(role, open, recent, csrf, { students, selected }));
+        return page(queuePage(role, lists, csrf, { students, selected }, url.searchParams.get("m")));
+      }
+      if (pathname === "/queue/dismiss-others" && request.method === "POST") {
+        const form = await request.formData();
+        if (!(await verifyCsrf(env, readCookie(request, SESSION_COOKIE), String(form.get("_csrf") ?? "")))) return new Response("Forbidden", { status: 403 });
+        const student = String(form.get("student") ?? "") || null;
+        const n = await dismissAllNonQuestions(env, role, student);
+        console.log(JSON.stringify({ event: "dismiss_all_non_questions", role, count: n }));
+        return redirect(`/queue?${student ? `student=${encodeURIComponent(student)}&` : ""}m=dismissed_all`);
       }
       if (pathname === "/students") return page(studentsPage(role, await listStudents(env), csrf));
       if (pathname.startsWith("/students/")) return handleStudentRoute(request, env, url, role, csrf);

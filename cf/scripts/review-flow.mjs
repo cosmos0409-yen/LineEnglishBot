@@ -132,6 +132,9 @@ async function main() {
   await sendWebhook(uid("B"), "老師明天要帶什麼？");
   await sendWebhook(uid("C"), `<img src=x onerror=alert(1)> affect 跟 effect 差在哪`);
   await sendWebhook(uid("D"), "crush 和 crash 差在哪");
+  // G、H：非英文訊息（不該出現在待處理）
+  await sendWebhook(uid("G"), "今天好累喔，練完球好想睡");
+  await sendWebhook(uid("H"), "老師明天幾點上課？");
 
   // 1. 未登入 → 導到登入頁，next 帶原路徑
   const anon = await http("/queue");
@@ -236,6 +239,38 @@ async function main() {
     JSON.stringify(itemNames));
   const reviewA = await http(`/review/${qa}`, { cookie: tutor });
   check("審核頁顯示備註名稱並連到學生頁", reviewA.text.includes(`href="/students/${uid("A")}"><b>王小明</b>`));
+
+  // 9.7 非英文訊息：不算在待處理、可一鍵標記不需回覆、可改回、可全部標記
+  const withoutFilter = (t) => t.replace(/<form method="get" action="\/queue" class="filter">[\s\S]*?<\/form>/, "");
+  const qg = await findQuestionId(tutor, "G");
+  const qh = await findQuestionId(tutor, "H");
+  const queueNow = await http("/queue", { cookie: tutor });
+  queueNow.text = withoutFilter(queueNow.text);
+  const othersBlock = queueNow.text.match(/<details class="others">[\s\S]*?<\/details>/)?.[0] ?? "";
+  const openBlock = queueNow.text.split('<details class="others">')[0];
+  check("非英文訊息放在收合區、不在待處理清單", qg && qh && othersBlock.includes(`R${RUN}-G`) && othersBlock.includes(`R${RUN}-H`) && !openBlock.includes(`R${RUN}-G`),
+    `qg=${qg} qh=${qh} inOthers=${othersBlock.includes(`R${RUN}-G`)}`);
+  const studentsNow = await http("/students", { cookie: tutor });
+  const gCard = studentsNow.text.match(new RegExp(`<a class="item" href="/students/${uid("G")}">[\\s\\S]*?</a>`))?.[0] ?? "";
+  check("學生清單的待處理數不含非英文訊息", gCard.includes(`R${RUN}-G`) && !gCard.includes("待處理"), gCard.replace(/\s+/g, " ").slice(0, 200));
+  const quick = await http(`/review/${qg}/dismiss`, { method: "POST", cookie: tutor, form: { from: "queue" } });
+  const afterQuick = await http("/queue", { cookie: tutor });
+  afterQuick.text = withoutFilter(afterQuick.text);
+  check("清單上一鍵『不需回覆』→ 回到清單，該則消失", quick.location === "/queue?m=dismissed" && !afterQuick.text.includes(`R${RUN}-G`), quick.location);
+  const gPage = await http(`/review/${qg}`, { cookie: tutor });
+  check("已處理的頁面顯示『已標記為不需回覆』與處理人", gPage.text.includes("已標記為不需回覆") && gPage.text.includes("導師・"));
+  const reopenG = await http(`/review/${qg}/reopen`, { method: "POST", cookie: tutor });
+  const afterReopen = await http("/queue", { cookie: tutor });
+  check("改回待處理後又出現在非英文訊息區", reopenG.location.endsWith("m=reopened") && (afterReopen.text.match(/<details class="others">[\s\S]*?<\/details>/)?.[0] ?? "").includes(`R${RUN}-G`));
+  const bulk = await http("/queue/dismiss-others", { method: "POST", cookie: cj, form: { student: "" } });
+  const afterBulk = await http("/queue", { cookie: cj });
+  afterBulk.text = withoutFilter(afterBulk.text);
+  check("全部標記為不需回覆 → G、H 都消失", bulk.location === "/queue?m=dismissed_all" && !afterBulk.text.includes(`R${RUN}-G`) && !afterBulk.text.includes(`R${RUN}-H`), bulk.location);
+  const dismissC = await http(`/review/${qc}/dismiss`, { method: "POST", cookie: tutor });
+  const approveC = await http(`/review/${qc}/approve`, { method: "POST", cookie: tutor, form: { final_answer: "x" } });
+  check("一般題目也能標記不需回覆，之後不能再通過推播", dismissC.location.endsWith("m=dismissed") && approveC.location.endsWith("m=already_done") && !pushes.some((p) => p.to === uid("C")));
+  const noCsrfBulk = await http("/queue/dismiss-others", { method: "POST", cookie: cj, noCsrf: true, form: { student: "" } });
+  check("全部標記也需要 CSRF token", noCsrfBulk.status === 403, String(noCsrfBulk.status));
 
   // 10. 已送出的老師解答記成前文（A 已改名為「王小明」，之後的通知也要用新名字）
   // （A 的追問會在下一次 AI 呼叫時用到；這裡只檢查審核頁的前文區塊能顯示老師訊息）

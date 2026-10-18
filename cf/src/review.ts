@@ -12,6 +12,8 @@ export interface ReviewQuestion extends QuestionRow {
   push_retry_key: string | null;
   push_error: string | null;
   read_marked_at: number | null;
+  dismissed_by: string | null;
+  dismissed_at: number | null;
   sent_at: number | null;
   // 來自 students（老師設定的備註名稱、班級；可能為 NULL）
   student_display_name: string | null;
@@ -37,14 +39,57 @@ export async function getQuestion(env: Env, id: string): Promise<ReviewQuestion 
 }
 
 /** 待處理（等待審核、推播失敗）＋最近完成的 10 筆；可只看某位學生。 */
-export async function listQueue(env: Env, studentLineId: string | null = null): Promise<{ open: ReviewQuestion[]; recent: ReviewQuestion[] }> {
+/** 待處理的條件：等待審核、推播中、推播失敗，但不含 AI 判斷為非英文問題、還沒人處理的訊息。 */
+export const OPEN_CONDITION = `q.status IN ('pending', 'approved', 'push_failed') AND NOT (q.status = 'pending' AND q.kind = 'non_question')`;
+
+export interface QueueLists {
+  open: ReviewQuestion[];
+  /** AI 判斷為非英文問題、還沒人處理（清單上收合顯示，不算在待處理） */
+  others: ReviewQuestion[];
+  recent: ReviewQuestion[];
+}
+
+/** 待處理＋非英文訊息＋最近送出；可只看某位學生。 */
+export async function listQueue(env: Env, studentLineId: string | null = null): Promise<QueueLists> {
   const filter = studentLineId ? " AND q.student_line_id = ?" : "";
   const bind = (stmt: D1PreparedStatement) => (studentLineId ? stmt.bind(studentLineId) : stmt);
-  const [open, recent] = await env.DB.batch<ReviewQuestion>([
-    bind(env.DB.prepare(`${WITH_STUDENT} WHERE q.status IN ('pending', 'approved', 'push_failed')${filter} ORDER BY q.created_at DESC LIMIT 100`)),
+  const [open, others, recent] = await env.DB.batch<ReviewQuestion>([
+    bind(env.DB.prepare(`${WITH_STUDENT} WHERE ${OPEN_CONDITION}${filter} ORDER BY q.created_at DESC LIMIT 100`)),
+    bind(env.DB.prepare(`${WITH_STUDENT} WHERE q.status = 'pending' AND q.kind = 'non_question'${filter} ORDER BY q.created_at DESC LIMIT 100`)),
     bind(env.DB.prepare(`${WITH_STUDENT} WHERE q.status = 'sent'${filter} ORDER BY q.sent_at DESC LIMIT 10`)),
   ]);
-  return { open: open.results, recent: recent.results };
+  return { open: open.results, others: others.results, recent: recent.results };
+}
+
+/** 標記「不需回覆」：只有還在等待審核的才能標記（已推播的不受影響）。 */
+export async function dismiss(env: Env, id: string, role: Role, now = Date.now()): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "UPDATE questions SET status = 'dismissed', dismissed_by = ?, dismissed_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' RETURNING id",
+  )
+    .bind(role, now, now, id)
+    .first();
+  return Boolean(row);
+}
+
+/** 一次把所有（或某位學生的）非英文訊息標記為不需回覆，回傳筆數。 */
+export async function dismissAllNonQuestions(env: Env, role: Role, studentLineId: string | null, now = Date.now()): Promise<number> {
+  const filter = studentLineId ? " AND student_line_id = ?" : "";
+  const stmt = env.DB.prepare(
+    `UPDATE questions SET status = 'dismissed', dismissed_by = ?, dismissed_at = ?, updated_at = ?
+      WHERE status = 'pending' AND kind = 'non_question'${filter}`,
+  );
+  const res = await (studentLineId ? stmt.bind(role, now, now, studentLineId) : stmt.bind(role, now, now)).run();
+  return res.meta.changes ?? 0;
+}
+
+/** 改回待處理（標錯時用）。 */
+export async function reopen(env: Env, id: string, now = Date.now()): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "UPDATE questions SET status = 'pending', dismissed_by = NULL, dismissed_at = NULL, updated_at = ? WHERE id = ? AND status = 'dismissed' RETURNING id",
+  )
+    .bind(now, id)
+    .first();
+  return Boolean(row);
 }
 
 /** 這一題之前 60 分鐘內的對話，加上這一題本身的訊息（由舊到新）。 */

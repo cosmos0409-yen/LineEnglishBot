@@ -1,4 +1,5 @@
 // 學生資料：老師設定的備註名稱、班級；學生清單與單一學生的提問紀錄
+import { OPEN_CONDITION } from "./review";
 
 export interface StudentRow {
   line_id: string;
@@ -51,7 +52,7 @@ export async function getStudent(env: Env, lineId: string): Promise<StudentRow |
 export async function listStudents(env: Env): Promise<StudentListRow[]> {
   const { results } = await env.DB.prepare(
     `SELECT s.*,
-            (SELECT COUNT(*) FROM questions q WHERE q.student_line_id = s.line_id AND q.status IN ('pending', 'approved', 'push_failed')) AS open_count,
+            (SELECT COUNT(*) FROM questions q WHERE q.student_line_id = s.line_id AND ${OPEN_CONDITION}) AS open_count,
             (SELECT COUNT(*) FROM questions q WHERE q.student_line_id = s.line_id) AS total_count
        FROM students s
       ORDER BY open_count > 0 DESC, s.last_seen_at DESC

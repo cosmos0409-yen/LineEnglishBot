@@ -71,6 +71,13 @@ pre.final{white-space:pre-wrap;font:inherit;margin:8px 0}
 h1.inline{display:inline;margin:0}
 .title{display:flex;align-items:center}
 input[type=text]{width:100%;padding:12px;font:inherit;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
+.actions{display:flex;flex-wrap:wrap;gap:10px}.actions form{flex:1;min-width:200px}.actions .primary,.actions .secondary{width:100%}
+.dismiss-row{margin:-4px 0 12px;text-align:center}.dismiss-row .link{color:var(--muted);font-weight:500;font-size:.9rem}
+details.others{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:12px 0}
+details.others .bulk{margin:10px 0}details.others .list{margin-top:8px}
+.item.other{display:flex;align-items:center;gap:10px}.item.other .item-link{flex:1;min-width:0;color:inherit;text-decoration:none}
+.secondary.small{padding:6px 10px;font-size:.88rem;white-space:nowrap}
+.badge.status-dismissed{background:var(--line);color:var(--muted)}
 a.student-link{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
 .msg .ic,.item-text .ic,.hint .ic{color:var(--muted)}
 `;
