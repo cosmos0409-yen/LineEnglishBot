@@ -30,7 +30,8 @@ cf/src/images.ts   — 照片切塊存 D1、讀回、過期清除
 cf/src/telegram.ts — 導師通知（HTML 跳脫）
 cf/src/review.ts   — 審核、推播、標已讀、清單
 cf/src/auth.ts     — PIN、Cookie、鎖定、CSRF
-cf/src/pages.ts    — 審核介面 HTML（html.ts 自動跳脫、static.ts 的 CSS／JS）
+cf/src/pages.ts    — 審核介面 HTML（html.ts 自動跳脫、static.ts 的 CSS／JS、icons.ts 線條圖示）
+cf/src/students.ts — 學生資料：備註名稱、班級、學生清單與紀錄
 cf/src/text.ts     — 純函式：句號清理、社交回應過濾、跳脫、分段、base64
 cf/migrations/     — main/（DB）、images/（IMAGES_DB）
 cf/scripts/        — 本機模擬器（假 LINE、假 Telegram）
@@ -47,6 +48,7 @@ doc/               — 計畫、交接手冊、Prompt 說明
 - 需要登入的 POST 表單都要帶 `_csrf`；不要用 Origin 判斷（內嵌瀏覽器會送 null）。
 - 圖片下載失敗不可「少了圖片照樣解題」，要讓 alarm 重試。
 - 模型 ID、API 參數、Cloudflare 設定鍵要查官方文件確認，不憑記憶。
+- 介面不用 Emoji，改用 `icons.ts` 的線條圖示；Telegram 通知用文字標籤。
 - Claude 的 Bash 讀不到使用者的 wrangler 登入資料：deploy、secret、tail 這類 wrangler 遠端指令改在使用者的終端機分頁執行（PowerShell 5.1，不支援 `&&`）。
 
 ## Further Reading

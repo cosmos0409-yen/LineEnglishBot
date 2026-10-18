@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-18　目前階段：**Phase 3 本機完成並已部署；等使用者設定 PIN 並用手機實測**
+> 最後更新：2026-10-18　目前階段：**Phase 3 ＋ 學生分類已部署；等使用者用手機實測，之後進 Phase 4**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -22,13 +22,18 @@
   - DO 新增 `getImage`、`regenerate`（照片轉換與重新產生的 CPU 放在 DO，不放在只有 10 ms 的 Worker）
   - 老師按「產生 AI 草稿」時，schema 拿掉 non_question，保證一定寫出草稿
   - 已送出的老師解答記成 `messages(role='teacher')`，之後的追問會帶入前文
+- **介面改用線條圖示**（`icons.ts`，使用者要求少用 Emoji）；Telegram 通知改用粗體標題，不用 Emoji
+- **按學生分類**（決策 D10，遠端已套用 `0003_students.sql`）：
+  - `students.ts`：`students` 表以 LINE userId 為主鍵；老師可設定備註名稱與班級（可留空），學生改暱稱不影響
+  - `/students` 學生清單、`/students/:id` 學生頁（設定備註＋完整提問紀錄）、`/queue?student=` 篩選
+  - 清單、審核頁、Telegram 通知都改用備註名稱（沒設定就用 LINE 暱稱）
 
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
 |---|---|---|
-| 型別檢查、單元測試 | ✅ 37/37 | `npm run typecheck`、`npm test`（Phase 3 新增 Cookie、PIN、html 跳脫、台灣時間、LINE 分則） |
-| 審核流程端對端 | ✅ 30/30（連跑兩次穩定） | `node scripts/review-flow.mjs`：登入／鎖定、CSRF、Origin、XSS、同時通過只推一次、推播失敗重送同 key、產生草稿、前文含老師解答 |
+| 型別檢查、單元測試 | ✅ 39/39 | `npm run typecheck`、`npm test`（Phase 3 新增 Cookie、PIN、html 跳脫、台灣時間、LINE 分則） |
+| 審核流程端對端 | ✅ 39/39（連跑兩次穩定；含學生分類 9 項） | `node scripts/review-flow.mjs`：登入／鎖定、CSRF、Origin、XSS、同時通過只推一次、推播失敗重送同 key、產生草稿、前文含老師解答 |
 | 手機尺寸實際操作 | ✅ | 內建瀏覽器 375px：登入、清單、審核頁（照片、前文、還原、字數、直接通過） |
 | 雲端 Phase 3 | ✅ 冒煙測試 | `/` 回 phase 3、未登入 `/queue` → 303 登入頁、樣式檔 200；**PIN 尚未設定，目前誰都登不進去（fail closed）** |
 | 合併、去重、社交略過、簽章、驗證按鈕 | ✅ | 模擬器 S1–S7，結果與 Phase 1 相同 |
@@ -46,7 +51,7 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 ## 3. 下一步（Next）
 
 **Phase 3 剩餘**：
-1. 👤 設定 PIN：在 `cf/` 執行 `npx wrangler secret put PIN_CHENG_JIE`、`npx wrangler secret put PIN_TUTOR`
+1. ~~設定 PIN~~（2026-10-18 已完成）
 2. 👤 用手機從 Telegram 測試群組的「前往審核」按鈕進入 → 輸入 PIN → 審核（雲端 LINE 是測試金鑰，推播會顯示「推播失敗」，屬正常）
 
 **Phase 4 — 預演**：使用者開自己的測試用 LINE 官方帳號 → 換上真實 LINE 金鑰 → 兩位導師用手機實際走完「學生提問 → 審核 → 收到解答」。
