@@ -4,6 +4,7 @@ import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
 import { generateDraft, type DraftResult, type HistoryTurn } from "./openai";
 import { getQuestion, saveRegeneratedDraft } from "./review";
+import { getStudent, studentLabel, upsertStudent } from "./students";
 import { notifyQuestion } from "./telegram";
 import { bytesToBase64, isSocialOnly } from "./text";
 
@@ -136,10 +137,12 @@ export class StudentBuffer extends DurableObject<Env> {
         aiError = String(err).slice(0, 500);
       }
 
+      const lineName = await getDisplayName(this.env, userId);
+      await upsertStudent(this.env, userId, lineName);
       question = await createQuestion(this.env, {
         batchId,
         studentLineId: userId,
-        studentName: await getDisplayName(this.env, userId),
+        studentName: lineName,
         questionText: text,
         imageIds: imageIds.slice(0, MAX_IMAGES),
         contextImageId: contextImage ? contextImageId : null,
@@ -153,7 +156,9 @@ export class StudentBuffer extends DurableObject<Env> {
 
     if (question.notified_at === null) {
       if (images.length === 0) images = await this.loadQuestionImages(question);
-      await notifyQuestion(this.env, question, images);
+      // 通知用老師設定的備註名稱（沒設定就用 LINE 暱稱）
+      const student = await getStudent(this.env, userId);
+      await notifyQuestion(this.env, question, images, student ? studentLabel(student) : question.student_name);
       await markNotified(this.env, question.id);
       log("telegram_notified", { questionId: question.id });
     }

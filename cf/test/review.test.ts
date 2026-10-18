@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createSessionCookie, matchPin, verifySession } from "../src/auth";
 import { formatTaipei, html, raw, timeAgo } from "../src/html";
 import { toTextBubbles } from "../src/line";
+import { CLASS_MAX, cleanField, NAME_MAX, studentLabel } from "../src/students";
 
 const env = (over: Partial<Record<string, string>> = {}) =>
   ({ SESSION_SECRET: "test-secret", PIN_CHENG_JIE: "111111", PIN_TUTOR: "222222", ...over }) as unknown as Env;
@@ -68,6 +69,20 @@ describe("html 樣板", () => {
     expect(timeAgo(now - 5 * 60_000, now)).toBe("5 分鐘前");
     expect(timeAgo(now - 3 * 3600_000, now)).toBe("3 小時前");
     expect(timeAgo(now - 49 * 3600_000, now)).toBe("2 天前");
+  });
+});
+
+describe("學生名稱", () => {
+  it("備註名稱優先，空白時用 LINE 暱稱", () => {
+    expect(studentLabel({ display_name: "王小明", line_name: "slowbro" })).toBe("王小明");
+    expect(studentLabel({ display_name: "  ", line_name: "slowbro" })).toBe("slowbro");
+    expect(studentLabel({ display_name: null, line_name: null, student_name: "舊暱稱" })).toBe("舊暱稱");
+  });
+  it("cleanField：去空白、壓縮空白、限長，空字串存成 null", () => {
+    expect(cleanField("  高一  C 班 ", CLASS_MAX)).toBe("高一 C 班");
+    expect(cleanField("   ", CLASS_MAX)).toBeNull();
+    expect(cleanField(null, NAME_MAX)).toBeNull();
+    expect(cleanField("x".repeat(50), NAME_MAX)?.length).toBe(NAME_MAX);
   });
 });
 

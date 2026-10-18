@@ -15,9 +15,10 @@ import {
 import type { BufferedMessage } from "./buffer";
 import { deleteExpiredImages } from "./images";
 import { verifySignature } from "./line";
-import { loginPage, notFoundPage, queuePage, reviewPage } from "./pages";
+import { loginPage, notFoundPage, queuePage, reviewPage, studentPage, studentsPage } from "./pages";
 import { approve, deliver, getContextMessages, getQuestion, listQueue, markReadOnce } from "./review";
 import { APP_CSS, APP_JS } from "./static";
+import { CLASS_MAX, cleanField, getStudent, listStudentQuestions, listStudents, NAME_MAX, updateStudent } from "./students";
 
 export { StudentBuffer } from "./buffer";
 
@@ -172,6 +173,26 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
   return new Response("Not found", { status: 404 });
 }
 
+/** /students/:lineId：GET 看學生資料與提問紀錄；POST 儲存老師設定的備註名稱、班級。 */
+async function handleStudentRoute(request: Request, env: Env, url: URL, role: Role, csrf: string): Promise<Response> {
+  const lineId = decodeURIComponent(url.pathname.slice("/students/".length));
+  const student = await getStudent(env, lineId);
+  if (!student) return page(notFoundPage(role, csrf), 404);
+
+  if (request.method === "POST") {
+    const form = await request.formData();
+    if (!(await verifyCsrf(env, readCookie(request, SESSION_COOKIE), String(form.get("_csrf") ?? "")))) {
+      console.log(JSON.stringify({ event: "csrf_rejected", path: url.pathname }));
+      return new Response("Forbidden", { status: 403 });
+    }
+    await updateStudent(env, lineId, cleanField(form.get("display_name"), NAME_MAX), cleanField(form.get("class_name"), CLASS_MAX));
+    console.log(JSON.stringify({ event: "student_updated", role }));
+    return redirect(`/students/${encodeURIComponent(lineId)}?m=saved`);
+  }
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  return page(studentPage(role, student, await listStudentQuestions(env, lineId), csrf, url.searchParams.get("m")));
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
@@ -199,7 +220,8 @@ export default {
       return redirect("/login?m=logged_out", { "Set-Cookie": clearSessionCookie() });
     }
 
-    if (pathname === "/queue" || pathname.startsWith("/review/") || pathname.startsWith("/img/")) {
+    const protectedPath = pathname === "/queue" || pathname === "/students" || ["/review/", "/img/", "/students/"].some((p) => pathname.startsWith(p));
+    if (protectedPath) {
       const role = await currentRole(request, env);
       if (!role) {
         if (request.method !== "GET") return redirect("/login");
@@ -207,9 +229,16 @@ export default {
       }
       const csrf = await csrfToken(env, readCookie(request, SESSION_COOKIE) ?? "");
       if (pathname === "/queue") {
-        const { open, recent } = await listQueue(env);
-        return page(queuePage(role, open, recent, csrf));
+        const studentId = url.searchParams.get("student") || null;
+        const [{ open, recent }, students, selected] = await Promise.all([
+          listQueue(env, studentId),
+          listStudents(env),
+          studentId ? getStudent(env, studentId) : Promise.resolve(null),
+        ]);
+        return page(queuePage(role, open, recent, csrf, { students, selected }));
       }
+      if (pathname === "/students") return page(studentsPage(role, await listStudents(env), csrf));
+      if (pathname.startsWith("/students/")) return handleStudentRoute(request, env, url, role, csrf);
       return handleReviewRoutes(request, env, ctx, url, role, csrf);
     }
 

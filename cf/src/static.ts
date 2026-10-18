@@ -61,6 +61,17 @@ pre.final{white-space:pre-wrap;font:inherit;margin:8px 0}
 .approver{display:inline-flex;align-items:center}.approver.done{color:var(--ok)}
 .photos img,.card a>img{min-height:160px;background:var(--line)}
 .who-name .muted{margin-left:.35em}
+.nav{display:flex;gap:14px;white-space:nowrap}
+.filter{display:flex;align-items:center;gap:8px;margin:12px 0 0}
+.filter label{display:inline-flex;align-items:center;font-weight:600;white-space:nowrap}
+.filter select{flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);font:inherit}
+.badge.class{background:var(--note-bg);color:var(--note);font-weight:500}
+.links{display:flex;flex-wrap:wrap;gap:6px 16px;margin:4px 0 8px}.links a{color:var(--primary);font-weight:600;text-decoration:none;display:inline-flex;align-items:center}
+.item-answer{display:flex;align-items:flex-start;color:var(--ok);font-size:.88rem;margin-top:4px}.item-answer span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1.inline{display:inline;margin:0}
+.title{display:flex;align-items:center}
+input[type=text]{width:100%;padding:12px;font:inherit;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
+a.student-link{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
 .msg .ic,.item-text .ic,.hint .ic{color:var(--muted)}
 `;
 
@@ -74,6 +85,10 @@ document.querySelectorAll("form").forEach(function (form) {
     var main = form.querySelector("button.primary, button.secondary");
     if (main) main.textContent = "處理中…";
   });
+});
+// 選了學生就直接篩選
+document.querySelectorAll("select[data-autosubmit]").forEach(function (sel) {
+  sel.addEventListener("change", function () { sel.form.submit(); });
 });
 var ta = document.querySelector("textarea[name=final_answer]");
 if (ta) {

@@ -12,6 +12,7 @@ const uid = (s) => `U_${RUN}_${s}`;
 
 const pushes = []; // { to, retryKey, texts }
 const reads = [];
+const telegramTexts = []; // 假 Telegram 收到的 sendMessage 內容
 let failPushes = 0; // > 0 時，接下來幾次推播回 500
 
 function readBody(req) {
@@ -49,7 +50,11 @@ const mock = createServer(async (req, res) => {
     reads.push(JSON.parse(body).markAsReadToken);
     return json(200, {});
   }
-  if (/^\/bot[^/]+\/send(Message|Photo)$/.test(req.url)) return json(200, { ok: true, result: {} });
+  if (/^\/bot[^/]+\/sendMessage$/.test(req.url)) {
+    telegramTexts.push(JSON.parse(body).text);
+    return json(200, { ok: true, result: {} });
+  }
+  if (/^\/bot[^/]+\/sendPhoto$/.test(req.url)) return json(200, { ok: true, result: {} });
   res.writeHead(404);
   res.end();
 });
@@ -210,14 +215,36 @@ async function main() {
   check("產生後有草稿", gen.location.endsWith("m=generated") && draft.trim().length > 0, `${gen.location} | ${draft.slice(0, 80)}`);
   console.log(`      （B 的草稿：${draft.replace(/\n/g, " / ").slice(0, 120)}）`);
 
-  // 10. 已送出的老師解答記成前文
+  // 9.5 按學生分類：學生清單、備註名稱、篩選
+  const studentsList = await http("/students", { cookie: tutor });
+  check("學生清單列出本輪學生", studentsList.text.includes(`R${RUN}-A`) && studentsList.text.includes(`R${RUN}-D`));
+  const save = await http(`/students/${uid("A")}`, { method: "POST", cookie: tutor, form: { display_name: "  王小明  ", class_name: "" } });
+  check("儲存備註名稱 → 轉回學生頁並顯示『已儲存』", save.status === 303 && save.location.endsWith("?m=saved"), `${save.status} ${save.location}`);
+  const studentA = await http(`/students/${uid("A")}`, { cookie: tutor });
+  check("學生頁顯示備註名稱、LINE 暱稱與已送出的解答", studentA.text.includes("王小明") && studentA.text.includes(`LINE 暱稱：R${RUN}-A`) && studentA.text.includes("ever since 強調"));
+  check("班級留空時不顯示班級標籤", !/badge class/.test(studentA.text.match(/<section class="card">[\s\S]*?<\/section>/)?.[0] ?? ""));
+  const saveNoCsrf = await http(`/students/${uid("A")}`, { method: "POST", cookie: tutor, noCsrf: true, form: { display_name: "駭客" } });
+  check("沒有 CSRF token 不能改學生資料", saveNoCsrf.status === 403, String(saveNoCsrf.status));
+  await http(`/students/${uid("C")}`, { method: "POST", cookie: tutor, form: { display_name: "<b>x</b>", class_name: "高一 C 班" } });
+  const studentC = await http(`/students/${uid("C")}`, { cookie: tutor });
+  check("備註名稱的 HTML 被跳脫、班級有顯示", studentC.text.includes("&lt;b&gt;x&lt;/b&gt;") && !studentC.text.includes("<b>x</b>") && studentC.text.includes("高一 C 班"));
+  const filtered = await http(`/queue?student=${uid("C")}`, { cookie: tutor });
+  // 只看清單項目（下拉選單本來就會列出所有學生）
+  const itemNames = [...filtered.text.matchAll(/<a class="item" href="\/review\/[^"]+">[\s\S]*?<b>([^<]*(?:&lt;[^<]*)*)<\/b>/g)].map((m) => m[1]);
+  check("清單篩選單一學生：清單只出現該學生的題目",
+    filtered.text.includes("&lt;b&gt;x&lt;/b&gt; 的待處理") && itemNames.length > 0 && itemNames.every((n) => n === "&lt;b&gt;x&lt;/b&gt;"),
+    JSON.stringify(itemNames));
+  const reviewA = await http(`/review/${qa}`, { cookie: tutor });
+  check("審核頁顯示備註名稱並連到學生頁", reviewA.text.includes(`href="/students/${uid("A")}"><b>王小明</b>`));
+
+  // 10. 已送出的老師解答記成前文（A 已改名為「王小明」，之後的通知也要用新名字）
   // （A 的追問會在下一次 AI 呼叫時用到；這裡只檢查審核頁的前文區塊能顯示老師訊息）
   await sendWebhook(uid("A"), "那 for 呢");
   const qa2 = await new Promise(async (resolve) => {
     for (let i = 0; i < 40; i++) {
       const r = await http("/queue", { cookie: tutor });
       const ids = [...r.text.matchAll(/href="\/review\/([0-9a-f-]{36})">[\s\S]*?<b>([^<]+)<\/b>/g)]
-        .filter((m) => m[2] === `R${RUN}-A` && m[1] !== qa)
+        .filter((m) => m[2] === "王小明" && m[1] !== qa)
         .map((m) => m[1]);
       if (ids.length) return resolve(ids[0]);
       await new Promise((r) => setTimeout(r, 1000));
@@ -228,6 +255,9 @@ async function main() {
   const historyBlock = followPage.text.match(/<details class="card history"[\s\S]*?<\/details>/)?.[0] ?? "(沒有前文區塊)";
   check("追問的審核頁顯示前面的對話（含老師送出的解答）", followPage.text.includes("前面的對話") && followPage.text.includes("ever since 強調"),
     `qa2=${qa2} ${historyBlock.replace(/\s+/g, " ").slice(0, 400)}`);
+  // 題目先寫進資料庫（清單上看得到），Telegram 通知緊接在後送出，所以這裡等一下
+  for (let i = 0; i < 20 && !telegramTexts.some((t) => t.includes("新提問｜王小明")); i++) await new Promise((r) => setTimeout(r, 500));
+  check("改名後的新提問，Telegram 通知使用備註名稱", telegramTexts.some((t) => t.includes("新提問｜王小明")), telegramTexts.slice(-2).join(" || ").slice(0, 300));
 
   // 11. PIN 錯太多次 → 鎖定
   for (let i = 0; i < 5; i++) await http("/login", { method: "POST", form: { pin: "999999", next: "/queue" } });

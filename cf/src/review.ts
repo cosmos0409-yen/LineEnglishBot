@@ -13,7 +13,13 @@ export interface ReviewQuestion extends QuestionRow {
   push_error: string | null;
   read_marked_at: number | null;
   sent_at: number | null;
+  // 來自 students（老師設定的備註名稱、班級；可能為 NULL）
+  student_display_name: string | null;
+  student_class: string | null;
 }
+
+const WITH_STUDENT = `SELECT q.*, s.display_name AS student_display_name, s.class_name AS student_class
+  FROM questions q LEFT JOIN students s ON s.line_id = q.student_line_id`;
 
 export interface ContextMessage {
   role: "student" | "teacher";
@@ -27,14 +33,16 @@ export interface ContextMessage {
 const CONTEXT_WINDOW_MS = 60 * 60 * 1000;
 
 export async function getQuestion(env: Env, id: string): Promise<ReviewQuestion | null> {
-  return env.DB.prepare("SELECT * FROM questions WHERE id = ?").bind(id).first<ReviewQuestion>();
+  return env.DB.prepare(`${WITH_STUDENT} WHERE q.id = ?`).bind(id).first<ReviewQuestion>();
 }
 
-/** 待處理（等待審核、推播失敗）＋最近完成的 10 筆。 */
-export async function listQueue(env: Env): Promise<{ open: ReviewQuestion[]; recent: ReviewQuestion[] }> {
+/** 待處理（等待審核、推播失敗）＋最近完成的 10 筆；可只看某位學生。 */
+export async function listQueue(env: Env, studentLineId: string | null = null): Promise<{ open: ReviewQuestion[]; recent: ReviewQuestion[] }> {
+  const filter = studentLineId ? " AND q.student_line_id = ?" : "";
+  const bind = (stmt: D1PreparedStatement) => (studentLineId ? stmt.bind(studentLineId) : stmt);
   const [open, recent] = await env.DB.batch<ReviewQuestion>([
-    env.DB.prepare("SELECT * FROM questions WHERE status IN ('pending', 'approved', 'push_failed') ORDER BY created_at DESC LIMIT 100"),
-    env.DB.prepare("SELECT * FROM questions WHERE status = 'sent' ORDER BY sent_at DESC LIMIT 10"),
+    bind(env.DB.prepare(`${WITH_STUDENT} WHERE q.status IN ('pending', 'approved', 'push_failed')${filter} ORDER BY q.created_at DESC LIMIT 100`)),
+    bind(env.DB.prepare(`${WITH_STUDENT} WHERE q.status = 'sent'${filter} ORDER BY q.sent_at DESC LIMIT 10`)),
   ]);
   return { open: open.results, recent: recent.results };
 }

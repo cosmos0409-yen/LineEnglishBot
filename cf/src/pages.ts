@@ -3,6 +3,7 @@ import { ROLE_LABEL, type Role } from "./auth";
 import { formatTaipei, html, raw, timeAgo, type SafeHtml } from "./html";
 import { icon, type IconName } from "./icons";
 import type { ContextMessage, ReviewQuestion } from "./review";
+import { CLASS_MAX, NAME_MAX, studentLabel, type StudentListRow, type StudentQuestionRow, type StudentRow } from "./students";
 import { ASSET_VERSION } from "./static";
 
 type FlashType = "success" | "warn" | "error";
@@ -21,6 +22,7 @@ export const FLASH: Record<string, { type: FlashType; text: string }> = {
   login_failed: { type: "error", text: "PIN 不正確" },
   locked: { type: "error", text: "輸錯太多次，請 15 分鐘後再試" },
   logged_out: { type: "success", text: "已登出，請重新輸入 PIN" },
+  saved: { type: "success", text: "已儲存學生資料" },
 };
 
 const KIND_LABEL: Record<string, string> = { question: "題目", need_more_info: "需要補資訊", non_question: "非英文問題" };
@@ -68,7 +70,7 @@ function layout(title: string, body: SafeHtml, role: Role | null, csrf = ""): st
 </head>
 <body>
 <header class="topbar">
-  ${role ? html`<a class="back" href="/queue">${icon("list")}清單</a>` : html`<span class="brand">英文解題助手</span>`}
+  ${role ? html`<nav class="nav"><a class="back" href="/queue">${icon("list")}清單</a><a class="back" href="/students">${icon("users")}學生</a></nav>` : html`<span class="brand">英文解題助手</span>`}
   ${who}
 </header>
 <main>${body}</main>
@@ -93,19 +95,90 @@ export function loginPage(next: string, code: string | null): string {
   return layout("導師登入", body, null);
 }
 
-export function queuePage(role: Role, open: ReviewQuestion[], recent: ReviewQuestion[], csrf: string, now = Date.now()): string {
+/** 題目上顯示的學生名稱：老師設定的備註名稱優先。 */
+const nameOf = (q: ReviewQuestion) => q.student_display_name?.trim() || q.student_name;
+const classBadge = (cls: string | null | undefined) => (cls ? html`<span class="badge class">${cls}</span>` : "");
+
+export interface QueueFilter {
+  students: StudentListRow[];
+  selected: StudentRow | null;
+}
+
+export function queuePage(role: Role, open: ReviewQuestion[], recent: ReviewQuestion[], csrf: string, filter: QueueFilter, now = Date.now()): string {
   const item = (q: ReviewQuestion) => html`
     <a class="item" href="/review/${q.id}">
-      <div class="item-top">${kindBadge(q)} ${statusBadge(q)} <b>${q.student_name}</b> <span class="muted">${timeAgo(q.created_at, now)}</span></div>
+      <div class="item-top">${kindBadge(q)} ${statusBadge(q)} <b>${nameOf(q)}</b> ${classBadge(q.student_class)} <span class="muted">${timeAgo(q.created_at, now)}</span></div>
       <div class="item-text">${q.question_text ? q.question_text.slice(0, 60) : html`${icon("image")}只傳了照片`}</div>
       ${q.status === "pending" ? approvals(q) : ""}
     </a>`;
+  const selectedId = filter.selected?.line_id ?? "";
+  const filterForm = html`
+  <form method="get" action="/queue" class="filter">
+    <label for="student-filter">${icon("filter")}<span>學生</span></label>
+    <select id="student-filter" name="student" data-autosubmit>
+      <option value="">全部學生</option>
+      ${filter.students.map(
+        (s) => html`<option value="${s.line_id}"${s.line_id === selectedId ? raw(" selected") : ""}>${studentLabel(s)}${s.class_name ? `（${s.class_name}）` : ""}${s.open_count ? ` · 待處理 ${s.open_count}` : ""}</option>`,
+      )}
+    </select>
+    <noscript><button class="secondary" type="submit">篩選</button></noscript>
+  </form>`;
+  const heading = filter.selected
+    ? html`<h1>${studentLabel(filter.selected)} 的待處理 <span class="count">${open.length}</span></h1>
+      <p class="links"><a href="/queue">看全部學生</a><a href="/students/${filter.selected.line_id}">${icon("users")}學生資料與完整紀錄</a></p>`
+    : html`<h1>待處理 <span class="count">${open.length}</span></h1>`;
   const body = html`
-  <h1>待處理 <span class="count">${open.length}</span></h1>
+  ${filterForm}
+  ${heading}
   ${open.length === 0 ? html`<p class="empty">${icon("inbox")}目前沒有待處理的提問</p>` : html`<div class="list">${open.map(item)}</div>`}
   <h2>最近送出</h2>
   ${recent.length === 0 ? html`<p class="empty">還沒有送出的解答</p>` : html`<div class="list">${recent.map(item)}</div>`}`;
   return layout("待審核清單", body, role, csrf);
+}
+
+export function studentsPage(role: Role, students: StudentListRow[], csrf: string, now = Date.now()): string {
+  const item = (s: StudentListRow) => html`
+    <a class="item" href="/students/${s.line_id}">
+      <div class="item-top"><b>${studentLabel(s)}</b> ${classBadge(s.class_name)}
+        ${s.open_count ? html`<span class="badge status-pending">待處理 ${s.open_count}</span>` : ""}</div>
+      <div class="muted">${s.display_name ? `LINE：${s.line_name} · ` : ""}共 ${s.total_count} 題 · 最後提問 ${timeAgo(s.last_seen_at, now)}</div>
+    </a>`;
+  const body = html`
+  <h1>學生 <span class="count">${students.length}</span></h1>
+  <p class="hint">點進學生可以設定備註名稱與班級，並查看他所有的提問紀錄。</p>
+  ${students.length === 0 ? html`<p class="empty">${icon("inbox")}還沒有學生提問過</p>` : html`<div class="list">${students.map(item)}</div>`}`;
+  return layout("學生", body, role, csrf);
+}
+
+export function studentPage(role: Role, s: StudentRow, questions: StudentQuestionRow[], csrf: string, flashCode: string | null, now = Date.now()): string {
+  const openCount = questions.filter((q) => q.status !== "sent").length;
+  const item = (q: StudentQuestionRow) => html`
+    <a class="item" href="/review/${q.id}">
+      <div class="item-top">${q.ai_status === "error" ? html`<span class="badge error">AI 失敗</span>` : html`<span class="badge kind-${q.kind ?? "none"}">${KIND_LABEL[q.kind ?? ""] ?? "未分類"}</span>`}
+        <span class="badge status-${q.status}">${STATUS_LABEL[q.status] ?? q.status}</span>
+        <span class="muted">${formatTaipei(q.created_at)}</span></div>
+      <div class="item-text">${q.question_text ? q.question_text.slice(0, 60) : html`${icon("image")}只傳了照片`}</div>
+      ${q.status === "sent" && q.final_answer ? html`<div class="item-answer">${icon("send")}<span>${q.final_answer.slice(0, 80)}</span></div>` : ""}
+    </a>`;
+  const body = html`
+  ${flash(flashCode)}
+  <section class="card">
+    <div class="meta"><h1 class="inline">${studentLabel(s)}</h1> ${classBadge(s.class_name)}</div>
+    <p class="muted">LINE 暱稱：${s.line_name} · 第一次提問 ${formatTaipei(s.first_seen_at)} · 共 ${questions.length} 題</p>
+    ${openCount ? html`<p class="links"><a href="/queue?student=${s.line_id}">${icon("list")}只看他的待處理（${openCount}）</a></p>` : ""}
+  </section>
+  <form method="post" action="/students/${s.line_id}" class="card stack">${csrfField(csrf)}
+    <b class="title">${icon("edit")}老師的備註</b>
+    <label for="display_name">備註名稱</label>
+    <input id="display_name" name="display_name" type="text" maxlength="${NAME_MAX}" value="${s.display_name ?? ""}" placeholder="${s.line_name}">
+    <label for="class_name">班級（可留空）</label>
+    <input id="class_name" name="class_name" type="text" maxlength="${CLASS_MAX}" value="${s.class_name ?? ""}" placeholder="例如：高一 C 班">
+    <p class="hint">備註名稱留空時，會顯示學生的 LINE 暱稱。只有老師看得到，學生不會知道。</p>
+    <button class="secondary" type="submit">${icon("check")}儲存</button>
+  </form>
+  <h2>提問紀錄</h2>
+  ${questions.length === 0 ? html`<p class="empty">還沒有提問</p>` : html`<div class="list">${questions.map(item)}</div>`}`;
+  return layout(`學生：${studentLabel(s)}`, body, role, csrf);
 }
 
 export function notFoundPage(role: Role, csrf: string): string {
@@ -201,7 +274,7 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
   const body = html`
   ${flash(flashCode)}
   <section class="card">
-    <div class="meta">${kindBadge(q)} ${statusBadge(q)} <b>${q.student_name}</b>
+    <div class="meta">${kindBadge(q)} ${statusBadge(q)} <a class="student-link" href="/students/${q.student_line_id}"><b>${nameOf(q)}</b></a> ${classBadge(q.student_class)}
       <span class="muted">${formatTaipei(q.created_at)}（${timeAgo(q.created_at, now)}）</span></div>
     <p class="qtext">${q.question_text ?? "（學生只傳了照片，沒有附文字）"}</p>
     ${imageCount ? html`<div class="photos">${photos}</div><p class="hint">點照片可以開新分頁放大</p>` : ""}
@@ -211,5 +284,5 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
   ${generateForm}
   ${note}
   ${action}`;
-  return layout(`審核：${q.student_name}`, body, role, csrf);
+  return layout(`審核：${nameOf(q)}`, body, role, csrf);
 }

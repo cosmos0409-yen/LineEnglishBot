@@ -58,10 +58,10 @@ function reviewUrl(env: Env, q: QuestionRow, generate = false): string {
  * - 非英文問題：精簡通知 +「產生解答」按鈕
  * - 題目／需要補資訊：照片（若有）＋ AI 草稿 + 給老師的備註 +「前往審核」按鈕
  */
-export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredImage[]): Promise<void> {
-  const name = escapeHtml(q.student_name);
+export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredImage[], studentName: string): Promise<void> {
+  const name = escapeHtml(studentName);
   const questionLine = q.question_text ? `問題：${escapeHtml(q.question_text)}` : "問題：（只傳了照片）";
-  const photoCaption = (i: number) => `${q.student_name} 的照片（${i + 1}/${images.length}）`;
+  const photoCaption = (i: number) => `${studentName} 的照片（${i + 1}/${images.length}）`;
 
   if (q.ai_status === "error") {
     for (const [i, img] of images.entries()) await sendPhoto(env, img, photoCaption(i));
