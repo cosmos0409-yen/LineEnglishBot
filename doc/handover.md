@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-18　目前階段：**Phase 4 進行中：已接上使用者自己的測試用 LINE 官方帳號，手機實測推播成功**
+> 最後更新：2026-10-18　目前階段：**Phase 4 完成（使用者確認：手機收到解答、已讀正常），下一步 Phase 5 正式上線（待使用者裁決）**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
