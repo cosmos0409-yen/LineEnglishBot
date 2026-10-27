@@ -2,6 +2,7 @@
 import { ROLE_LABEL, type Role } from "./auth";
 import { formatTaipei, html, raw, timeAgo, type SafeHtml } from "./html";
 import { icon, type IconName } from "./icons";
+import { AI_ERROR_REASON, type AiErrorKind } from "./openai";
 import type { ContextMessage, ReviewQuestion } from "./review";
 import { CLASS_MAX, NAME_MAX, studentLabel, type StudentListRow, type StudentQuestionRow, type StudentRow } from "./students";
 import { ASSET_VERSION } from "./static";
@@ -34,7 +35,11 @@ const STATUS_LABEL: Record<string, string> = { pending: "待審核", approved: "
 const csrfField = (token: string) => html`<input type="hidden" name="_csrf" value="${token}">`;
 
 function flash(code: string | null): SafeHtml | string {
-  const f = code ? FLASH[code] : undefined;
+  // generate_failed_<原因>：重新產生失敗時寫明原因（例如金鑰失效）
+  const failKind = code?.startsWith("generate_failed_") ? (code.slice("generate_failed_".length) as AiErrorKind) : null;
+  const f = failKind && failKind in AI_ERROR_REASON
+    ? { type: "error" as FlashType, text: `AI 產生失敗：${AI_ERROR_REASON[failKind]}` }
+    : code ? FLASH[code] : undefined;
   const ic: Record<FlashType, IconName> = { success: "check", warn: "info", error: "alert" };
   return f ? html`<div class="flash ${f.type}" role="status">${icon(ic[f.type])}<span>${f.text}</span></div>` : "";
 }
@@ -264,7 +269,7 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
     !done && (needsDraft || highlightGenerate)
       ? html`<section class="card ${highlightGenerate ? "highlight" : ""}">
           <p>${q.ai_status === "error"
-            ? html`${icon("alert")}AI 處理失敗（${q.ai_error ?? "原因不明"}）。可以重新產生，或直接在下方手寫解答。`
+            ? html`${icon("alert")}${(q.ai_error ?? "AI 處理失敗，原因不明").split("｜")[0]}。修正後可以重新產生，或直接在下方手寫解答。${q.ai_error?.includes("｜") ? html`<span class="muted">（${q.ai_error.split("｜")[1]}）</span>` : ""}`
             : q.kind === "non_question"
               ? "AI 判斷這則不是英文問題，所以沒有寫草稿。不需要回覆的話直接標記已處理；如果其實是題目，請產生 AI 草稿。"
               : "還沒有 AI 草稿。"}</p>

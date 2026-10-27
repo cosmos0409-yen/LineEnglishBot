@@ -181,8 +181,8 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
   if (action === "reopen") return back((await reopen(env, q.id)) ? "reopened" : "already_done");
   if (action === "generate") {
     if (q.status !== "pending") return back("already_done");
-    const ok = await env.STUDENT_BUFFER.getByName(q.student_line_id).regenerate(q.id);
-    return back(ok ? "generated" : "generate_failed");
+    const result = await env.STUDENT_BUFFER.getByName(q.student_line_id).regenerate(q.id);
+    return back(result.ok ? "generated" : `generate_failed_${result.kind}`);
   }
   return new Response("Not found", { status: 404 });
 }

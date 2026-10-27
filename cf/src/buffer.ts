@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createQuestion, getHistory, getQuestionByBatch, markNotified, recordStudentMessages, type QuestionRow } from "./db";
 import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
-import { generateDraft, type DraftResult, type HistoryTurn } from "./openai";
+import { AI_ERROR_REASON, AiError, generateDraft, type AiErrorKind, type DraftResult, type HistoryTurn } from "./openai";
 import { getQuestion, saveRegeneratedDraft } from "./review";
 import { getStudent, studentLabel, upsertStudent } from "./students";
 import { notifyQuestion } from "./telegram";
@@ -132,9 +132,12 @@ export class StudentBuffer extends DurableObject<Env> {
           contextImage: contextImage ? { base64: bytesToBase64(contextImage.bytes), contentType: contextImage.contentType } : null,
         });
       } catch (err) {
-        // 還有重試機會就交給 alarm 重試；最後一次仍失敗才存成「AI 失敗」並通知老師
-        if (retryCount < LAST_RETRY) throw err;
-        aiError = String(err).slice(0, 500);
+        // 金鑰失效、額度用完、模型設定錯：重試也不會好 → 直接存成「AI 失敗」並通知老師（寫明原因）
+        // 其他（OpenAI 暫時故障、網路問題）：交給 alarm 重試，最後一次仍失敗才通知
+        const retryable = !(err instanceof AiError) || err.retryable;
+        if (retryable && retryCount < LAST_RETRY) throw err;
+        aiError = (err instanceof AiError ? err.message : `${AI_ERROR_REASON.unknown}｜${String(err)}`).slice(0, 500);
+        log("ai_failed", { kind: err instanceof AiError ? err.kind : "unknown", retryable, aiError });
       }
 
       const lineName = await getDisplayName(this.env, userId);
@@ -192,9 +195,9 @@ export class StudentBuffer extends DurableObject<Env> {
   }
 
   /** 老師在審核頁按「產生 AI 草稿」：用原本的訊息、照片、前文重新產生，並強制作答。 */
-  async regenerate(questionId: string): Promise<boolean> {
+  async regenerate(questionId: string): Promise<{ ok: true } | { ok: false; kind: AiErrorKind }> {
     const q = await getQuestion(this.env, questionId);
-    if (!q) return false;
+    if (!q) return { ok: false, kind: "unknown" };
     const images = await this.loadQuestionImages(q);
     const contextImage = q.context_image_id ? await loadImage(this.env, q.context_image_id) : null;
     const first = await this.env.DB.prepare("SELECT MIN(ts) AS ts FROM messages WHERE question_id = ?").bind(q.id).first<{ ts: number | null }>();
@@ -215,10 +218,10 @@ export class StudentBuffer extends DurableObject<Env> {
       });
       await saveRegeneratedDraft(this.env, q.id, result);
       console.log(JSON.stringify({ event: "draft_regenerated", questionId: q.id, kind: result.draft.kind, ...result.meta }));
-      return true;
+      return { ok: true };
     } catch (err) {
       console.log(JSON.stringify({ event: "regenerate_failed", questionId: q.id, error: String(err).slice(0, 300) }));
-      return false;
+      return { ok: false, kind: err instanceof AiError ? err.kind : "unknown" };
     }
   }
 

@@ -115,7 +115,49 @@ async function callOnce(env: Env, model: string, serviceTier: string | null, inp
   });
 }
 
-/** 產生解答草稿。Flex 遇到 429（資源不足）時自動改用標準方案重試一次。失敗時丟出例外，交給 alarm 重試。 */
+export type AiErrorKind = "auth" | "quota" | "model" | "rate_limit" | "server" | "unknown";
+
+/** 給老師看的原因（Telegram、審核頁共用）。 */
+export const AI_ERROR_REASON: Record<AiErrorKind, string> = {
+  auth: "OpenAI 金鑰失效，請更新 OPENAI_API_KEY",
+  quota: "OpenAI 額度用完，請到 OpenAI 後台加值或提高使用上限",
+  model: "找不到 AI 模型或請求格式有誤，請檢查 OPENAI_MODEL_* 設定",
+  rate_limit: "OpenAI 暫時忙碌，多次重試仍失敗",
+  server: "OpenAI 暫時故障，多次重試仍失敗",
+  unknown: "AI 處理失敗，原因不明",
+};
+
+/** OpenAI 呼叫失敗。retryable = false 代表重試也不會好（金鑰、額度、模型設定），應該直接通知老師。 */
+export class AiError extends Error {
+  constructor(
+    readonly kind: AiErrorKind,
+    readonly retryable: boolean,
+    readonly detail: string,
+  ) {
+    super(`${AI_ERROR_REASON[kind]}｜${detail}`);
+    this.name = "AiError";
+  }
+}
+
+/** 依 HTTP 狀態與 OpenAI 的錯誤代碼分類。 */
+export function classifyOpenAIError(status: number, body: string): AiError {
+  let code = "";
+  try {
+    const e = (JSON.parse(body) as { error?: { code?: string; type?: string } }).error;
+    code = e?.code || e?.type || "";
+  } catch {
+    // 不是 JSON 就只看狀態碼
+  }
+  const detail = `HTTP ${status}${code ? ` ${code}` : ""}`;
+  if (status === 401 || status === 403) return new AiError("auth", false, detail);
+  if (status === 429 && code === "insufficient_quota") return new AiError("quota", false, detail);
+  if (status === 429) return new AiError("rate_limit", true, detail);
+  if (status === 400 || status === 404 || status === 422) return new AiError("model", false, detail);
+  if (status >= 500 || status === 408) return new AiError("server", true, detail);
+  return new AiError("unknown", true, detail);
+}
+
+/** 產生解答草稿。Flex 遇到 429（資源不足）時自動改用標準方案重試一次。失敗時丟出 AiError。 */
 export async function generateDraft(env: Env, input: DraftInput): Promise<DraftResult> {
   const hasImage = input.images.length > 0 || Boolean(input.contextImage);
   const model = hasImage ? env.OPENAI_MODEL_IMAGE : env.OPENAI_MODEL_TEXT;
@@ -129,7 +171,7 @@ export async function generateDraft(env: Env, input: DraftInput): Promise<DraftR
     resp = await callOnce(env, model, null, input);
   }
   if (!resp.ok) {
-    throw new Error(`OpenAI ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    throw classifyOpenAIError(resp.status, await resp.text());
   }
 
   const data = (await resp.json()) as {

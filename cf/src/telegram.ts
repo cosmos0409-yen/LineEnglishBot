@@ -65,7 +65,11 @@ export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredIma
 
   if (q.ai_status === "error") {
     for (const [i, img] of images.entries()) await sendPhoto(env, img, photoCaption(i));
-    await sendMessage(env, `<b>AI 處理失敗｜${name}</b>\n${questionLine}\n\n請老師直接處理`, [{ text: "前往審核", url: reviewUrl(env, q) }]);
+    // ai_error 格式：「給老師看的原因｜技術細節」，通知只放原因
+    const reason = escapeHtml((q.ai_error ?? "原因不明").split("｜")[0]);
+    await sendMessage(env, `<b>AI 處理失敗｜${name}</b>\n${questionLine}\n\n原因：${reason}\n修正後可在審核頁按「重新產生 AI 草稿」，或直接手寫解答`, [
+      { text: "前往審核", url: reviewUrl(env, q) },
+    ]);
     return;
   }
 
