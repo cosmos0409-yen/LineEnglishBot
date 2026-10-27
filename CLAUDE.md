@@ -49,6 +49,7 @@ doc/               — 計畫、交接手冊、Prompt 說明
 - 圖片下載失敗不可「少了圖片照樣解題」，要讓 alarm 重試。
 - 模型 ID、API 參數、Cloudflare 設定鍵要查官方文件確認，不憑記憶。
 - 介面不用 Emoji，改用 `icons.ts` 的線條圖示；Telegram 通知用文字標籤。
+- **wrangler 在含中文的路徑會直接結束（exit 127，2026-10-27 起）**：先 `subst L: C:\LINE官方帳號開發`，再從 `L:\cf` 執行 wrangler（deploy、dev、secret）。subst 重開機後會消失，要再執行一次。
 - Claude 的 Bash 讀不到使用者的 wrangler 登入資料：deploy、secret、tail 這類 wrangler 遠端指令改在使用者的終端機分頁執行（PowerShell 5.1，不支援 `&&`）。
 
 ## Further Reading
