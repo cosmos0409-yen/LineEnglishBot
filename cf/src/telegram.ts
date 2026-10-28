@@ -48,6 +48,15 @@ export async function sendPhoto(env: Env, img: StoredImage, caption: string): Pr
   await callApi(env, "sendPhoto", { method: "POST", body: form });
 }
 
+/** 老師1 設定的模型無法使用、已自動改用預設模型時提醒（呼叫端負責頻率限制）。 */
+export async function notifyModelFallback(env: Env, from: string, to: string): Promise<void> {
+  await sendMessage(
+    env,
+    `<b>AI 模型自動切換</b>\n設定的模型 ${escapeHtml(from)} 目前無法使用，已暫時改用預設模型 ${escapeHtml(to)}，學生照常收到解答。\n請到 AI 設定頁更新模型。`,
+    [{ text: "前往 AI 設定", url: `${env.APP_BASE_URL}/settings` }],
+  );
+}
+
 function reviewUrl(env: Env, q: QuestionRow, generate = false): string {
   return `${env.APP_BASE_URL}/review/${q.id}${generate ? "?generate=1" : ""}`;
 }

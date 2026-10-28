@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-18　目前階段：**Phase 4 完成（使用者確認：手機收到解答、已讀正常），下一步 Phase 5 正式上線（待使用者裁決）**
+> 最後更新：2026-10-28　目前階段：**Phase 4 完成；改名、AI 設定頁、待處理清單 bug 修正已部署；等新的 OpenAI 金鑰與業主 LINE 權限後進 Phase 5**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -33,6 +33,12 @@
 - **Phase 4 接上真實 LINE**（2026-10-18）：使用者自己的測試用官方帳號，Webhook 指向 workers.dev；手機實測「我想要問第16提」直接通過並推播成功
 - **雲端測試資料已清除**：刪除 ID 含 `_` 的模擬學生（3 題、4 則訊息、3 位學生）；保留使用者手機的真實測試
 
+- **2026-10-28 部署**：
+  - 介面「承傑／導師」改為「老師1／老師2」（`auth.ts` 的 `ROLE_LABEL` 一處管理）
+  - 修正：AI 失敗（`kind` 為 NULL）的題目原本不會出現在待處理清單（SQL 的 NULL 比較），改用 `IFNULL`，並加單元測試
+  - AI 設定頁 `/settings`（`settings.ts`、migration `0005_settings.sql`）：只有老師1 能修改；測試通過才能套用；模型失效自動退回預設並提醒
+  - AI 錯誤分類：金鑰失效、額度用完、模型設定錯直接通知並寫明原因，不重試
+
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
@@ -62,6 +68,10 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 **Phase 4 — 預演**：使用者開自己的測試用 LINE 官方帳號 → 換上真實 LINE 金鑰 → 兩位導師用手機實際走完「學生提問 → 審核 → 收到解答」。
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
+
+- 🚧 **OpenAI 金鑰失效**（10/27 下午換上的新 key 約一小時後也失效，第四次）。AI 相關功能都無法使用，需使用者查明原因後換新 key（建議永不過期、專用 Project）
+- ⚠️ AI 設定頁「測試通過 → 套用」與「模型失效自動退回」尚未用真實 OpenAI 驗證（端對端 58 項中，需要 AI 的 8 項因金鑰失效未通過，其餘全過）
+- ⏳ Phase 5 切換清單：業主 LINE 權限（或 Channel secret＋重新發行的 access token）、Webhook、回應設定、`TELEGRAM_CHAT_ID` 改為 `-5224723425`、詢問業主方案（輕用量每月 200 則推播）
 
 - 🚧 **wrangler 在中文路徑 `C:\LINE官方帳號開發` 會無聲結束（exit 127）**：2026-10-27 發現（10/18 還正常，可能是 Windows 更新）。複製到英文路徑可正常打包。
   暫時做法：`subst L: C:\LINE官方帳號開發` 後，在 `L:\cf` 執行 wrangler。subst 重開機後消失。長期做法：把專案搬到英文路徑，或設定開機自動 subst

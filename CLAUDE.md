@@ -32,6 +32,7 @@ cf/src/review.ts   — 審核、推播、標已讀、清單
 cf/src/auth.ts     — PIN、Cookie、鎖定、CSRF
 cf/src/pages.ts    — 審核介面 HTML（html.ts 自動跳脫、static.ts 的 CSS／JS、icons.ts 線條圖示）
 cf/src/students.ts — 學生資料：備註名稱、班級、學生清單與紀錄
+cf/src/settings.ts — AI 設定（模型、思考深度；老師1 可改）與變更紀錄
 cf/src/text.ts     — 純函式：句號清理、社交回應過濾、跳脫、分段、base64
 cf/migrations/     — main/（DB）、images/（IMAGES_DB）
 cf/scripts/        — 本機模擬器（假 LINE、假 Telegram）

@@ -1,5 +1,6 @@
 import { SYSTEM_PROMPT } from "./prompt";
 import { cleanAnswer } from "./text";
+import { defaultAiConfig, getAiConfig, type AiConfigInput } from "./settings";
 
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -22,6 +23,8 @@ export interface DraftResult {
     reasoningTokens: number;
     latencyMs: number;
     flexFallback: boolean;
+    /** 老師1 設定的模型無法使用、自動改用預設模型時，記下原本的模型 */
+    modelFallbackFrom?: string;
   };
 }
 
@@ -100,10 +103,10 @@ export function buildMessages(input: DraftInput) {
   return [{ role: "system", content: SYSTEM_PROMPT }, ...history, { role: "user", content: buildUserContent(input) }];
 }
 
-async function callOnce(env: Env, model: string, serviceTier: string | null, input: DraftInput) {
+async function callOnce(env: Env, model: string, effort: string, serviceTier: string | null, input: DraftInput) {
   const body: Record<string, unknown> = {
     model,
-    reasoning_effort: env.OPENAI_REASONING_EFFORT,
+    reasoning_effort: effort,
     response_format: responseFormat(Boolean(input.forceAnswer)),
     messages: buildMessages(input),
   };
@@ -158,20 +161,48 @@ export function classifyOpenAIError(status: number, body: string): AiError {
 }
 
 /** 產生解答草稿。Flex 遇到 429（資源不足）時自動改用標準方案重試一次。失敗時丟出 AiError。 */
-export async function generateDraft(env: Env, input: DraftInput): Promise<DraftResult> {
+/**
+ * config：要用的模型與思考深度。沒給就讀 AI 設定（老師1 在審核介面設定的，沒設定則用預設值）。
+ * 測試設定時會明確傳入 config，並關閉自動退回（allowFallback = false），才能如實反映新模型能不能用。
+ */
+export async function generateDraft(
+  env: Env,
+  input: DraftInput,
+  options: { config?: AiConfigInput; allowFallback?: boolean } = {},
+): Promise<DraftResult> {
+  const config = options.config ?? (await getAiConfig(env));
   const hasImage = input.images.length > 0 || Boolean(input.contextImage);
-  const model = hasImage ? env.OPENAI_MODEL_IMAGE : env.OPENAI_MODEL_TEXT;
+  let model = hasImage ? config.modelImage : config.modelText;
+  let effort = config.effort;
   const tier = env.OPENAI_SERVICE_TIER || null;
   const started = Date.now();
 
   let flexFallback = false;
-  let resp = await callOnce(env, model, tier, input);
-  if (resp.status === 429 && tier === "flex") {
-    flexFallback = true;
-    resp = await callOnce(env, model, null, input);
-  }
+  let modelFallbackFrom: string | undefined;
+  const attempt = async () => {
+    let resp = await callOnce(env, model, effort, tier, input);
+    if (resp.status === 429 && tier === "flex") {
+      flexFallback = true;
+      resp = await callOnce(env, model, effort, null, input);
+    }
+    return resp;
+  };
+
+  let resp = await attempt();
   if (!resp.ok) {
-    throw classifyOpenAIError(resp.status, await resp.text());
+    const err = classifyOpenAIError(resp.status, await resp.text());
+    // 安全網：設定的模型被下架或設定錯 → 改用 wrangler.jsonc 的預設模型再試一次
+    const d = defaultAiConfig(env);
+    const fallbackModel = hasImage ? d.modelImage : d.modelText;
+    if (options.allowFallback !== false && err.kind === "model" && (model !== fallbackModel || effort !== d.effort)) {
+      modelFallbackFrom = model;
+      model = fallbackModel;
+      effort = d.effort;
+      resp = await attempt();
+      if (!resp.ok) throw classifyOpenAIError(resp.status, await resp.text());
+    } else {
+      throw err;
+    }
   }
 
   const data = (await resp.json()) as {
@@ -192,6 +223,7 @@ export async function generateDraft(env: Env, input: DraftInput): Promise<DraftR
       reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens ?? 0,
       latencyMs: Date.now() - started,
       flexFallback,
+      ...(modelFallbackFrom ? { modelFallbackFrom } : {}),
     },
   };
 }

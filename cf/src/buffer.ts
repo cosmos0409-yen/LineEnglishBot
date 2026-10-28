@@ -2,10 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import { createQuestion, getHistory, getQuestionByBatch, markNotified, recordStudentMessages, type QuestionRow } from "./db";
 import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
-import { AI_ERROR_REASON, AiError, generateDraft, type AiErrorKind, type DraftResult, type HistoryTurn } from "./openai";
+import { AI_ERROR_REASON, AiError, generateDraft, type AiErrorKind, type DraftInput, type DraftResult, type HistoryTurn } from "./openai";
+import { claimFallbackWarning, type AiConfigInput } from "./settings";
 import { getQuestion, saveRegeneratedDraft } from "./review";
 import { getStudent, studentLabel, upsertStudent } from "./students";
-import { notifyQuestion } from "./telegram";
+import { notifyModelFallback, notifyQuestion } from "./telegram";
 import { bytesToBase64, isSocialOnly } from "./text";
 
 /** webhook 事件中處理需要的欄位（存進 DO 的 SQLite）。 */
@@ -16,6 +17,20 @@ export interface BufferedMessage {
   type: string; // text / image / 其他
   text: string | null;
   markAsReadToken: string | null;
+}
+
+/** AI 設定頁「測試」的結果（一個模型一筆）。 */
+export interface AiTestResult {
+  label: string;
+  model: string;
+  ok: boolean;
+  seconds: number;
+  skipped?: boolean;
+  promptTokens?: number;
+  completionTokens?: number;
+  kind?: string;
+  answer?: string;
+  error?: string;
 }
 
 const MAX_IMAGES = 4;
@@ -155,6 +170,12 @@ export class StudentBuffer extends DurableObject<Env> {
         now: Date.now(),
       });
       log("question_saved", { questionId: question.id, kind: question.kind, aiStatus: question.ai_status, ...(result?.meta ?? {}) });
+      // 設定的模型不能用、已自動改用預設模型：提醒老師1更新設定（一小時最多一次；提醒失敗不影響這一題）
+      if (result?.meta.modelFallbackFrom && (await claimFallbackWarning(this.env))) {
+        await notifyModelFallback(this.env, result.meta.modelFallbackFrom, result.meta.model).catch((e) =>
+          log("fallback_warning_failed", { error: String(e).slice(0, 200) }),
+        );
+      }
     }
 
     if (question.notified_at === null) {
@@ -187,6 +208,49 @@ export class StudentBuffer extends DurableObject<Env> {
     }
     if (missing > 0 && retryCount < LAST_RETRY) throw new Error(`圖片下載失敗 ${missing} 張，等待重試`);
     return images;
+  }
+
+  /**
+   * AI 設定頁的「測試」：用指定的模型各跑一次，不自動退回預設模型，如實回報能不能用。
+   * 照片題用最近一題有照片的提問（只在系統內部使用）；純文字用固定的範例題。
+   */
+  async testAiConfig(config: AiConfigInput): Promise<AiTestResult[]> {
+    const results: AiTestResult[] = [];
+    const run = async (label: string, model: string, input: DraftInput) => {
+      const started = Date.now();
+      try {
+        const r = await generateDraft(this.env, input, { config, allowFallback: false });
+        results.push({
+          label,
+          model,
+          ok: true,
+          seconds: Math.round((Date.now() - started) / 100) / 10,
+          promptTokens: r.meta.promptTokens,
+          completionTokens: r.meta.completionTokens,
+          kind: r.draft.kind,
+          answer: r.draft.answer.slice(0, 600),
+        });
+      } catch (err) {
+        results.push({ label, model, ok: false, seconds: Math.round((Date.now() - started) / 100) / 10, error: err instanceof AiError ? err.message : String(err).slice(0, 300) });
+      }
+    };
+
+    await run("純文字題目", config.modelText, { text: "since 跟 ever since 有什麼不同？", images: [] });
+
+    const latest = await this.env.DB.prepare(
+      "SELECT image_ids, question_text FROM questions WHERE image_ids != '[]' ORDER BY created_at DESC LIMIT 1",
+    ).first<{ image_ids: string; question_text: string | null }>();
+    const imageId = latest ? (JSON.parse(latest.image_ids) as string[])[0] : undefined;
+    const img = imageId ? await loadImage(this.env, imageId) : null;
+    if (img) {
+      await run("有照片的題目（用最近一題的照片）", config.modelImage, {
+        text: latest?.question_text ?? null,
+        images: [{ base64: bytesToBase64(img.bytes), contentType: img.contentType }],
+      });
+    } else {
+      results.push({ label: "有照片的題目", model: config.modelImage, ok: false, seconds: 0, skipped: true, error: "目前沒有可用的照片題（可能都超過保存期限），這一項沒有測試" });
+    }
+    return results;
   }
 
   /** 審核頁讀照片（D1 照片轉換需要的 CPU 可能超過 Worker 的 10 ms，所以放在 DO 處理）。 */

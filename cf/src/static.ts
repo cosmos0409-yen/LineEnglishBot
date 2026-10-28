@@ -78,6 +78,11 @@ details.others .bulk{margin:10px 0}details.others .list{margin-top:8px}
 .item.other{display:flex;align-items:center;gap:10px}.item.other .item-link{flex:1;min-width:0;color:inherit;text-decoration:none}
 .secondary.small{padding:6px 10px;font-size:.88rem;white-space:nowrap}
 .badge.status-dismissed{background:var(--line);color:var(--muted)}
+dl.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:8px 0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;word-break:break-all}
+.test-result{border-top:1px solid var(--line);padding-top:8px;margin-top:8px}.test-result p{margin:4px 0}
+ul.log{list-style:none;margin:0;padding:0}ul.log li{border-top:1px solid var(--line);padding:8px 0;display:grid;gap:2px}ul.log form{margin:0}
+select{padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text);font:inherit;width:100%}
+.nav{gap:12px}
 a.student-link{color:inherit;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
 .msg .ic,.item-text .ic,.hint .ic{color:var(--muted)}
 `;

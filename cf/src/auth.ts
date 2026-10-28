@@ -2,7 +2,9 @@
 // Cookie 內含 PIN 版本（PIN 的雜湊前綴），更換 PIN 後所有裝置自動登出。
 
 export type Role = "cheng_jie" | "tutor";
-export const ROLE_LABEL: Record<Role, string> = { cheng_jie: "承傑", tutor: "導師" };
+// 介面上顯示的名稱（只改這裡就好）；內部代號 cheng_jie／tutor 與 PIN 的 secret 名稱維持不變
+// 老師1（cheng_jie）可以「直接通過」與修改 AI 設定
+export const ROLE_LABEL: Record<Role, string> = { cheng_jie: "老師1", tutor: "老師2" };
 
 export const SESSION_COOKIE = "lt_session";
 export const SESSION_MAX_AGE_SEC = 365 * 24 * 60 * 60;

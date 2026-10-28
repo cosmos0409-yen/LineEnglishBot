@@ -3,6 +3,9 @@ import { createSessionCookie, matchPin, verifySession } from "../src/auth";
 import { formatTaipei, html, raw, timeAgo } from "../src/html";
 import { toTextBubbles } from "../src/line";
 import { CLASS_MAX, cleanField, NAME_MAX, studentLabel } from "../src/students";
+import { getAiConfig, isValidModelId, validateAiInput } from "../src/settings";
+import { OPEN_CONDITION } from "../src/review";
+import { DatabaseSync } from "node:sqlite";
 
 const env = (over: Partial<Record<string, string>> = {}) =>
   ({ SESSION_SECRET: "test-secret", PIN_CHENG_JIE: "111111", PIN_TUTOR: "222222", ...over }) as unknown as Env;
@@ -83,6 +86,70 @@ describe("學生名稱", () => {
     expect(cleanField("   ", CLASS_MAX)).toBeNull();
     expect(cleanField(null, NAME_MAX)).toBeNull();
     expect(cleanField("x".repeat(50), NAME_MAX)?.length).toBe(NAME_MAX);
+  });
+});
+
+describe("待處理清單的條件（OPEN_CONDITION）", () => {
+  it("AI 失敗（kind 為 NULL）的題目要算待處理；非英文、已處理、已送出不算", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("CREATE TABLE questions (id TEXT, status TEXT, kind TEXT)");
+    const rows: [string, string, string | null][] = [
+      ["question", "pending", "question"],
+      ["ai_failed", "pending", null],
+      ["need_info", "pending", "need_more_info"],
+      ["non_question", "pending", "non_question"],
+      ["dismissed", "dismissed", "non_question"],
+      ["sent", "sent", "question"],
+      ["push_failed", "push_failed", "question"],
+      ["non_question_forced_sent", "push_failed", "non_question"],
+    ];
+    const insert = db.prepare("INSERT INTO questions VALUES (?, ?, ?)");
+    for (const r of rows) insert.run(...r);
+    const open = (db.prepare(`SELECT id FROM questions q WHERE ${OPEN_CONDITION} ORDER BY id`).all() as { id: string }[]).map((r) => r.id);
+    expect(open).toEqual(["ai_failed", "need_info", "non_question_forced_sent", "push_failed", "question"]);
+  });
+});
+
+describe("getAiConfig", () => {
+  const env = (dbError: boolean, rows: { key: string; value: string }[] = []) =>
+    ({
+      OPENAI_MODEL_IMAGE: "img-default",
+      OPENAI_MODEL_TEXT: "txt-default",
+      OPENAI_REASONING_EFFORT: "medium",
+      DB: {
+        prepare: () => ({
+          run: async () => {
+            if (dbError) throw new Error("D1_ERROR: no such table: settings");
+            return { results: rows };
+          },
+        }),
+      },
+    }) as unknown as Env;
+  it("讀不到設定資料表時改用預設值，不丟錯", async () => {
+    const c = await getAiConfig(env(true));
+    expect([c.modelImage, c.modelText, c.effort]).toEqual(["img-default", "txt-default", "medium"]);
+    expect(c.custom).toEqual({});
+  });
+  it("有自訂值時覆蓋預設、並標記為自訂", async () => {
+    const c = await getAiConfig(env(false, [{ key: "model_text", value: "txt-custom" }]));
+    expect([c.modelImage, c.modelText]).toEqual(["img-default", "txt-custom"]);
+    expect(c.custom).toEqual({ model_text: true });
+  });
+});
+
+describe("AI 設定驗證", () => {
+  it("模型名稱只接受英數與 . _ : -", () => {
+    expect(isValidModelId("gpt-6.1-sol")).toBe(true);
+    expect(isValidModelId("ft:gpt-6-luna:org:abc")).toBe(true);
+    expect(isValidModelId("")).toBe(false);
+    expect(isValidModelId("gpt 6")).toBe(false);
+    expect(isValidModelId("<script>")).toBe(false);
+    expect(isValidModelId("x".repeat(65))).toBe(false);
+  });
+  it("思考深度只接受 low / medium / high", () => {
+    expect(validateAiInput({ modelImage: "gpt-6.1-sol", modelText: "gpt-6-luna", effort: "medium" })).toBeNull();
+    expect(validateAiInput({ modelImage: "gpt-6.1-sol", modelText: "gpt-6-luna", effort: "max" })).not.toBeNull();
+    expect(validateAiInput({ modelImage: "bad model", modelText: "gpt-6-luna", effort: "low" })).not.toBeNull();
   });
 });
 

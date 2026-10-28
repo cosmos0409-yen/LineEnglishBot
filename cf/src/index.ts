@@ -15,7 +15,8 @@ import {
 import type { BufferedMessage } from "./buffer";
 import { deleteExpiredImages } from "./images";
 import { verifySignature } from "./line";
-import { loginPage, notFoundPage, queuePage, reviewPage, studentPage, studentsPage } from "./pages";
+import { loginPage, notFoundPage, queuePage, reviewPage, settingsPage, studentPage, studentsPage } from "./pages";
+import { defaultAiConfig, getAiConfig, listOpenAIModels, listSettingsLog, revertSetting, saveAiConfig, validateAiInput, type AiConfigInput } from "./settings";
 import { approve, deliver, dismiss, dismissAllNonQuestions, getContextMessages, getQuestion, listQueue, markReadOnce, reopen } from "./review";
 import { APP_CSS, APP_JS } from "./static";
 import { CLASS_MAX, cleanField, getStudent, listStudentQuestions, listStudents, NAME_MAX, updateStudent } from "./students";
@@ -187,6 +188,51 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
   return new Response("Not found", { status: 404 });
 }
 
+/** /settings：AI 設定。所有老師都能看；只有老師1（cheng_jie）能測試、套用、恢復預設、改回。 */
+async function handleSettingsRoute(request: Request, env: Env, url: URL, role: Role, csrf: string): Promise<Response> {
+  const show = async (extra: Partial<Parameters<typeof settingsPage>[0]> = {}) => {
+    const [config, models, log] = await Promise.all([getAiConfig(env), listOpenAIModels(env), listSettingsLog(env)]);
+    return page(settingsPage({ role, csrf, config, defaults: defaultAiConfig(env), models, log, flashCode: url.searchParams.get("m"), ...extra }));
+  };
+  if (request.method === "GET" && url.pathname === "/settings") return show();
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const form = await request.formData();
+  if (!(await verifyCsrf(env, readCookie(request, SESSION_COOKIE), String(form.get("_csrf") ?? "")))) {
+    console.log(JSON.stringify({ event: "csrf_rejected", path: url.pathname }));
+    return new Response("Forbidden", { status: 403 });
+  }
+  if (role !== "cheng_jie") return redirect("/settings?m=settings_forbidden");
+
+  const input: AiConfigInput = {
+    modelImage: String(form.get("model_image") ?? "").trim(),
+    modelText: String(form.get("model_text") ?? "").trim(),
+    effort: String(form.get("effort") ?? "").trim(),
+  };
+
+  if (url.pathname === "/settings/test") {
+    if (validateAiInput(input)) return redirect("/settings?m=settings_invalid");
+    // 照片轉 base64 需要的 CPU 超過 Worker 上限，測試在 DO 裡跑
+    const results = await env.STUDENT_BUFFER.getByName("__ai_settings_test__").testAiConfig(input);
+    console.log(JSON.stringify({ event: "settings_tested", input, ok: results.map((r) => r.ok) }));
+    return show({ tested: { input, results } });
+  }
+  if (url.pathname === "/settings") {
+    if (validateAiInput(input)) return redirect("/settings?m=settings_invalid");
+    await saveAiConfig(env, role, input);
+    console.log(JSON.stringify({ event: "settings_saved", input }));
+    return redirect("/settings?m=settings_saved");
+  }
+  if (url.pathname === "/settings/reset") {
+    const d = defaultAiConfig(env);
+    await saveAiConfig(env, role, { modelImage: d.modelImage, modelText: d.modelText, effort: d.effort });
+    return redirect("/settings?m=settings_reset");
+  }
+  const revert = url.pathname.match(/^\/settings\/revert\/(\d+)$/);
+  if (revert) return redirect(`/settings?m=${(await revertSetting(env, role, Number(revert[1]))) ? "settings_reverted" : "settings_invalid"}`);
+  return new Response("Not found", { status: 404 });
+}
+
 /** /students/:lineId：GET 看學生資料與提問紀錄；POST 儲存老師設定的備註名稱、班級。 */
 async function handleStudentRoute(request: Request, env: Env, url: URL, role: Role, csrf: string): Promise<Response> {
   const lineId = decodeURIComponent(url.pathname.slice("/students/".length));
@@ -234,7 +280,8 @@ export default {
       return redirect("/login?m=logged_out", { "Set-Cookie": clearSessionCookie() });
     }
 
-    const protectedPath = pathname === "/queue" || pathname === "/students" || ["/queue/", "/review/", "/img/", "/students/"].some((p) => pathname.startsWith(p));
+    const protectedPath =
+      pathname === "/queue" || pathname === "/students" || pathname === "/settings" || ["/queue/", "/review/", "/img/", "/students/", "/settings/"].some((p) => pathname.startsWith(p));
     if (protectedPath) {
       const role = await currentRole(request, env);
       if (!role) {
@@ -261,6 +308,7 @@ export default {
       }
       if (pathname === "/students") return page(studentsPage(role, await listStudents(env), csrf));
       if (pathname.startsWith("/students/")) return handleStudentRoute(request, env, url, role, csrf);
+      if (pathname === "/settings" || pathname.startsWith("/settings/")) return handleSettingsRoute(request, env, url, role, csrf);
       return handleReviewRoutes(request, env, ctx, url, role, csrf);
     }
 

@@ -161,10 +161,10 @@ async function main() {
   // 4. 審核頁內容與標已讀
   const pageA = await http(`/review/${qa}`, { cookie: tutor });
   check("審核頁顯示學生問題（在照片／解答之前）", pageA.text.indexOf("since 跟 ever since") < pageA.text.indexOf("要送給學生的解答"));
-  check("審核頁顯示目前身分『導師』與切換身分", pageA.text.includes("<b>導師</b> <span class=\"muted\">· 這台裝置已記住") && pageA.text.includes("切換身分"));
-  check("導師只看到自己的按鈕，沒有『直接通過』", pageA.text.includes("以導師身分通過") && !pageA.text.includes("name=\"direct\""));
+  check("審核頁顯示目前身分『老師2』與切換身分", pageA.text.includes("<b>老師2</b> <span class=\"muted\">· 這台裝置已記住") && pageA.text.includes("切換身分"));
+  check("老師2 只看到自己的按鈕，沒有『直接通過』", pageA.text.includes("以老師2身分通過") && !pageA.text.includes("name=\"direct\""));
   const pageAcj = await http(`/review/${qa}`, { cookie: cj });
-  check("承傑看得到『直接通過』", pageAcj.text.includes("name=\"direct\""));
+  check("老師1 看得到『直接通過』，且寫明不等老師2", pageAcj.text.includes("name=\"direct\"") && pageAcj.text.includes("不等老師2"));
   await new Promise((r) => setTimeout(r, 500));
   check("打開審核頁後呼叫 LINE 標已讀（只一次）", reads.length === 1, JSON.stringify(reads));
 
@@ -199,7 +199,7 @@ async function main() {
   // 8. 推播失敗 → push_failed → 重新推播成功，retry key 相同
   failPushes = 1;
   const direct = await http(`/review/${qd}/approve`, { method: "POST", cookie: cj, form: { final_answer: "crush 是壓碎、crash 是撞擊", direct: "1" } });
-  check("承傑直接通過但推播失敗 → push_failed", direct.location.endsWith("m=push_failed"), direct.location);
+  check("老師1 直接通過但推播失敗 → push_failed", direct.location.endsWith("m=push_failed"), direct.location);
   const failedPage = await http(`/review/${qd}`, { cookie: cj });
   check("審核頁顯示推播失敗與『重新推播』按鈕", failedPage.text.includes("LINE 推播失敗") && failedPage.text.includes("重新推播"));
   const resend = await http(`/review/${qd}/resend`, { method: "POST", cookie: cj });
@@ -258,7 +258,7 @@ async function main() {
   afterQuick.text = withoutFilter(afterQuick.text);
   check("清單上一鍵『不需回覆』→ 回到清單，該則消失", quick.location === "/queue?m=dismissed" && !afterQuick.text.includes(`R${RUN}-G`), quick.location);
   const gPage = await http(`/review/${qg}`, { cookie: tutor });
-  check("已處理的頁面顯示『已標記為不需回覆』與處理人", gPage.text.includes("已標記為不需回覆") && gPage.text.includes("導師・"));
+  check("已處理的頁面顯示『已標記為不需回覆』與處理人", gPage.text.includes("已標記為不需回覆") && gPage.text.includes("老師2・"));
   const reopenG = await http(`/review/${qg}/reopen`, { method: "POST", cookie: tutor });
   const afterReopen = await http("/queue", { cookie: tutor });
   check("改回待處理後又出現在非英文訊息區", reopenG.location.endsWith("m=reopened") && (afterReopen.text.match(/<details class="others">[\s\S]*?<\/details>/)?.[0] ?? "").includes(`R${RUN}-G`));
@@ -293,6 +293,40 @@ async function main() {
   // 題目先寫進資料庫（清單上看得到），Telegram 通知緊接在後送出，所以這裡等一下
   for (let i = 0; i < 20 && !telegramTexts.some((t) => t.includes("新提問｜王小明")); i++) await new Promise((r) => setTimeout(r, 500));
   check("改名後的新提問，Telegram 通知使用備註名稱", telegramTexts.some((t) => t.includes("新提問｜王小明")), telegramTexts.slice(-2).join(" || ").slice(0, 300));
+
+  // 10.5 AI 設定（只有老師1 能改；測試不通過不能套用；改壞了會自動退回預設模型並提醒）
+  const sTutor = await http("/settings", { cookie: tutor });
+  check("老師2 看得到 AI 設定，但沒有修改表單", sTutor.status === 200 && sTutor.text.includes("只有老師1可以修改") && !sTutor.text.includes('action="/settings/test"'));
+  const sTutorPost = await http("/settings/test", { method: "POST", cookie: tutor, form: { model_image: "gpt-6.1-sol", model_text: "gpt-6-luna", effort: "low" } });
+  check("老師2 送出設定 → 被拒絕", sTutorPost.location === "/settings?m=settings_forbidden", sTutorPost.location);
+  const sCj = await http("/settings", { cookie: cj });
+  check("老師1 看到目前設定與測試表單", sCj.text.includes('action="/settings/test"') && sCj.text.includes("gpt-6.1-sol") && sCj.text.includes("gpt-6-luna"));
+  const badTest = await http("/settings/test", { method: "POST", cookie: cj, form: { model_image: "gpt-6.1-sol", model_text: "no-such-model-xyz", effort: "medium" } });
+  check("不存在的模型 → 測試失敗、沒有『套用』按鈕", badTest.text.includes("測試有問題") && !badTest.text.includes("套用這組設定"), badTest.text.match(/<section class="card (success|error)">[\s\S]{0,300}/)?.[0]);
+  const goodTest = await http("/settings/test", { method: "POST", cookie: cj, form: { model_image: "gpt-6.1-sol", model_text: "gpt-6-luna", effort: "low" } });
+  check("可用的模型 → 測試通過、出現『套用』", goodTest.text.includes("測試通過") && goodTest.text.includes("套用這組設定"), goodTest.text.match(/<section class="card (success|error)">[\s\S]{0,400}/)?.[0]);
+  const apply = await http("/settings", { method: "POST", cookie: cj, form: { model_image: "gpt-6.1-sol", model_text: "gpt-6-luna", effort: "low" } });
+  const afterApply = await http("/settings", { cookie: cj });
+  check("套用後顯示 low（自訂）並留下變更紀錄", apply.location === "/settings?m=settings_saved" && /思考深度<\/dt><dd><b>low<\/b> <span class="badge class">自訂/.test(afterApply.text) && afterApply.text.includes("medium → <b>low</b>"));
+  const revertId = afterApply.text.match(/action="\/settings\/revert\/(\d+)"/)?.[1];
+  const reverted = await http(`/settings/revert/${revertId}`, { method: "POST", cookie: cj });
+  const afterRevert = await http("/settings", { cookie: cj });
+  check("改回 → 思考深度回到 medium（預設）", reverted.location === "/settings?m=settings_reverted" && /思考深度<\/dt><dd><b>medium<\/b> <span class="badge">預設/.test(afterRevert.text));
+  const noCsrfSettings = await http("/settings", { method: "POST", cookie: cj, noCsrf: true, form: { model_image: "x", model_text: "y", effort: "low" } });
+  check("修改設定也需要 CSRF token", noCsrfSettings.status === 403, String(noCsrfSettings.status));
+  // 模擬模型被下架：直接套用不存在的模型，再讓學生問一題純文字
+  await http("/settings", { method: "POST", cookie: cj, form: { model_image: "gpt-6.1-sol", model_text: "no-such-model-xyz", effort: "medium" } });
+  await sendWebhook(uid("J"), "affect 跟 effect 差在哪");
+  const qj = await findQuestionId(tutor, "J");
+  for (let i = 0; i < 20 && !telegramTexts.some((t) => t.includes("AI 模型自動切換")); i++) await new Promise((r) => setTimeout(r, 500));
+  const jPage = qj ? await http(`/review/${qj}`, { cookie: tutor }) : { text: "" };
+  // 必須真的有 AI 草稿：不能是「AI 失敗」標籤，草稿欄也不能是空的
+  const jDraft = jPage.text.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/)?.[1] ?? "";
+  check("模型壞掉時自動改用預設模型：學生的題目照樣有草稿", qj && !jPage.text.includes('class="badge error">AI 失敗') && jDraft.trim().length > 0, `qj=${qj} draft=${jDraft.slice(0, 40)}`);
+  check("並在 Telegram 提醒更新 AI 設定", telegramTexts.some((t) => t.includes("AI 模型自動切換") && t.includes("no-such-model-xyz")));
+  const reset = await http("/settings/reset", { method: "POST", cookie: cj });
+  const afterReset = await http("/settings", { cookie: cj });
+  check("全部恢復預設值", reset.location === "/settings?m=settings_reset" && !afterReset.text.includes('badge class">自訂'));
 
   // 11. PIN 錯太多次 → 鎖定
   for (let i = 0; i < 5; i++) await http("/login", { method: "POST", form: { pin: "999999", next: "/queue" } });

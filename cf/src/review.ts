@@ -40,7 +40,8 @@ export async function getQuestion(env: Env, id: string): Promise<ReviewQuestion 
 
 /** 待處理（等待審核、推播失敗）＋最近完成的 10 筆；可只看某位學生。 */
 /** 待處理的條件：等待審核、推播中、推播失敗，但不含 AI 判斷為非英文問題、還沒人處理的訊息。 */
-export const OPEN_CONDITION = `q.status IN ('pending', 'approved', 'push_failed') AND NOT (q.status = 'pending' AND q.kind = 'non_question')`;
+// 注意 kind 可能是 NULL（AI 失敗）：用 IFNULL，否則 NULL 比較結果為「未知」，AI 失敗的題目會從待處理消失
+export const OPEN_CONDITION = `q.status IN ('pending', 'approved', 'push_failed') AND NOT (q.status = 'pending' AND IFNULL(q.kind, '') = 'non_question')`;
 
 export interface QueueLists {
   open: ReviewQuestion[];

@@ -2,7 +2,9 @@
 import { ROLE_LABEL, type Role } from "./auth";
 import { formatTaipei, html, raw, timeAgo, type SafeHtml } from "./html";
 import { icon, type IconName } from "./icons";
+import type { AiTestResult } from "./buffer";
 import { AI_ERROR_REASON, type AiErrorKind } from "./openai";
+import { EFFORT_LABEL, EFFORT_OPTIONS, SETTING_LABEL, type AiConfig, type AiConfigInput, type AiSettingKey, type SettingsLogRow } from "./settings";
 import type { ContextMessage, ReviewQuestion } from "./review";
 import { CLASS_MAX, NAME_MAX, studentLabel, type StudentListRow, type StudentQuestionRow, type StudentRow } from "./students";
 import { ASSET_VERSION } from "./static";
@@ -17,7 +19,7 @@ export const FLASH: Record<string, { type: FlashType; text: string }> = {
   already_done: { type: "warn", text: "這一題已經處理完成，沒有再送出" },
   already_you: { type: "warn", text: "你已經審核過這一題了，等待另一位老師" },
   empty: { type: "error", text: "解答不能是空白" },
-  direct_not_allowed: { type: "error", text: "只有承傑可以直接通過" },
+  direct_not_allowed: { type: "error", text: `只有${ROLE_LABEL.cheng_jie}可以直接通過` },
   generated: { type: "success", text: "已產生 AI 草稿，請檢查後再通過" },
   generate_failed: { type: "error", text: "AI 產生失敗，請稍後再試，或直接手寫解答" },
   login_failed: { type: "error", text: "PIN 不正確" },
@@ -27,6 +29,11 @@ export const FLASH: Record<string, { type: FlashType; text: string }> = {
   dismissed: { type: "success", text: "已標記為不需回覆" },
   dismissed_all: { type: "success", text: "已把非英文訊息全部標記為不需回覆" },
   reopened: { type: "success", text: "已改回待處理" },
+  settings_saved: { type: "success", text: "已套用新的 AI 設定，下一題開始生效" },
+  settings_reset: { type: "success", text: "已恢復預設值" },
+  settings_reverted: { type: "success", text: "已改回原本的設定" },
+  settings_invalid: { type: "error", text: "設定內容不正確，沒有儲存" },
+  settings_forbidden: { type: "error", text: `只有${ROLE_LABEL.cheng_jie}可以修改 AI 設定` },
 };
 
 const KIND_LABEL: Record<string, string> = { question: "題目", need_more_info: "需要補資訊", non_question: "非英文問題" };
@@ -56,7 +63,7 @@ function statusBadge(q: ReviewQuestion): SafeHtml {
 function approvals(q: ReviewQuestion): SafeHtml {
   const mark = (done: number, who: string) =>
     html`<span class="approver ${done ? "done" : ""}">${icon(done ? "check" : "clock")}${who}${done ? "已通過" : "待審"}</span>`;
-  return html`<span class="approvals">${mark(q.approver_cheng_jie, "承傑")}${mark(q.approver_tutor, "導師")}</span>`;
+  return html`<span class="approvals">${mark(q.approver_cheng_jie, ROLE_LABEL.cheng_jie)}${mark(q.approver_tutor, ROLE_LABEL.tutor)}</span>`;
 }
 
 function layout(title: string, body: SafeHtml, role: Role | null, csrf = ""): string {
@@ -78,7 +85,7 @@ function layout(title: string, body: SafeHtml, role: Role | null, csrf = ""): st
 </head>
 <body>
 <header class="topbar">
-  ${role ? html`<nav class="nav"><a class="back" href="/queue">${icon("list")}清單</a><a class="back" href="/students">${icon("users")}學生</a></nav>` : html`<span class="brand">英文解題助手</span>`}
+  ${role ? html`<nav class="nav"><a class="back" href="/queue">${icon("list")}清單</a><a class="back" href="/students">${icon("users")}學生</a><a class="back" href="/settings">${icon("sliders")}設定</a></nav>` : html`<span class="brand">英文解題助手</span>`}
   ${who}
 </header>
 <main>${body}</main>
@@ -89,7 +96,7 @@ function layout(title: string, body: SafeHtml, role: Role | null, csrf = ""): st
 export function loginPage(next: string, code: string | null): string {
   const body = html`
   <section class="card narrow">
-    <h1>導師登入</h1>
+    <h1>老師登入</h1>
     <p>第一次使用請輸入你的 PIN。之後<b>這台手機／電腦會記住你，一年內不用再輸入</b>。</p>
     ${flash(code)}
     <form method="post" action="/login" class="stack">
@@ -100,7 +107,7 @@ export function loginPage(next: string, code: string | null): string {
     </form>
     <p class="hint">提醒：在 Telegram 裡點開連結，和用手機瀏覽器（Chrome、Safari）打開，記憶是分開的。兩邊都會用的話，各輸入一次即可。</p>
   </section>`;
-  return layout("導師登入", body, null);
+  return layout("老師登入", body, null);
 }
 
 /** 題目上顯示的學生名稱：老師設定的備註名稱優先。 */
@@ -303,7 +310,7 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
       <form method="post" action="/review/${q.id}/resend">${csrfField(csrf)}<button class="primary" type="submit">${icon("refresh")}重新推播</button></form>
       <p class="hint">重新推播不會讓學生收到兩次（LINE 會自動去除 24 小時內的重複發送）。</p></section>`;
   } else {
-    const otherLabel = role === "cheng_jie" ? "導師" : "承傑";
+    const otherLabel = ROLE_LABEL[role === "cheng_jie" ? "tutor" : "cheng_jie"];
     action = html`<form method="post" action="/review/${q.id}/approve" class="card answer">${csrfField(csrf)}
       <label for="final">要送給學生的解答</label>
       <textarea id="final" name="final_answer" data-ai="${q.ai_answer ?? ""}" required>${q.final_answer ?? ""}</textarea>
@@ -315,7 +322,7 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
       ${myDone
         ? html`<button class="primary" type="submit" disabled>你已審核，等待${otherLabel}</button>`
         : html`${role === "cheng_jie"
-            ? html`<label class="check"><input type="checkbox" name="direct" value="1"> 直接通過（不等導師，馬上送給學生）</label>`
+            ? html`<label class="check"><input type="checkbox" name="direct" value="1"> 直接通過（不等${ROLE_LABEL.tutor}，馬上送給學生）</label>`
             : ""}
           <button class="primary" type="submit">${icon("check")}以${ROLE_LABEL[role]}身分通過</button>`}
     </form>
@@ -336,4 +343,114 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
   ${note}
   ${action}`;
   return layout(`審核：${nameOf(q)}`, body, role, csrf);
+}
+
+// ---------- AI 設定 ----------
+
+export interface SettingsPageData {
+  role: Role;
+  csrf: string;
+  config: AiConfig;
+  defaults: AiConfigInput;
+  models: string[] | null; // null = 讀不到 OpenAI 模型清單，改用文字輸入
+  log: SettingsLogRow[];
+  flashCode: string | null;
+  tested?: { input: AiConfigInput; results: AiTestResult[] };
+  now?: number;
+}
+
+export function settingsPage(d: SettingsPageData): string {
+  const canEdit = d.role === "cheng_jie";
+  const form = d.tested?.input ?? { modelImage: d.config.modelImage, modelText: d.config.modelText, effort: d.config.effort };
+  const tag = (k: AiSettingKey) => (d.config.custom[k] ? html`<span class="badge class">自訂</span>` : html`<span class="badge">預設</span>`);
+
+  const modelField = (name: string, id: string, value: string, defaultValue: string) => {
+    if (!d.models) {
+      return html`<input id="${id}" name="${name}" type="text" value="${value}" maxlength="64" required>
+        <p class="hint">讀不到 OpenAI 的模型清單，請直接輸入模型名稱。預設：${defaultValue}</p>`;
+    }
+    const list = [...new Set([value, defaultValue, ...d.models])];
+    return html`<select id="${id}" name="${name}">
+      ${list.map((m) => html`<option value="${m}"${m === value ? raw(" selected") : ""}>${m}${m === defaultValue ? "（預設）" : ""}</option>`)}
+    </select>`;
+  };
+
+  const current = html`<section class="card">
+    <h2>${icon("sliders")}目前使用中</h2>
+    <dl class="kv">
+      <dt>${SETTING_LABEL.model_image}</dt><dd><b>${d.config.modelImage}</b> ${tag("model_image")}</dd>
+      <dt>${SETTING_LABEL.model_text}</dt><dd><b>${d.config.modelText}</b> ${tag("model_text")}</dd>
+      <dt>${SETTING_LABEL.reasoning_effort}</dt><dd><b>${d.config.effort}</b> ${tag("reasoning_effort")}</dd>
+    </dl>
+    <p class="hint">設定的模型如果日後被 OpenAI 下架，系統會自動改用預設模型繼續作答，並在 Telegram 提醒更新。</p>
+  </section>`;
+
+  const editor = canEdit
+    ? html`<form method="post" action="/settings/test" class="card stack">${csrfField(d.csrf)}
+        <h2>${icon("edit")}調整模型</h2>
+        <label for="model_image">${SETTING_LABEL.model_image}</label>
+        ${modelField("model_image", "model_image", form.modelImage, d.defaults.modelImage)}
+        <label for="model_text">${SETTING_LABEL.model_text}</label>
+        ${modelField("model_text", "model_text", form.modelText, d.defaults.modelText)}
+        <label for="effort">${SETTING_LABEL.reasoning_effort}</label>
+        <select id="effort" name="effort">
+          ${EFFORT_OPTIONS.map((e) => html`<option value="${e}"${e === form.effort ? raw(" selected") : ""}>${EFFORT_LABEL[e]}${e === d.defaults.effort ? "（預設）" : ""}</option>`)}
+        </select>
+        <p class="hint">按「測試」後，系統會用一題純文字範例，以及最近一題有照片的提問，各跑一次（只在系統內部使用，會花一點點 OpenAI 費用，約 1 元台幣以內）。確認沒問題才會出現「套用」。</p>
+        <button class="secondary" type="submit">${icon("wand")}測試這組設定</button>
+      </form>`
+    : html`<p class="hint">${icon("info")}只有${ROLE_LABEL.cheng_jie}可以修改 AI 設定。</p>`;
+
+  let testCard: SafeHtml | string = "";
+  if (d.tested) {
+    const ran = d.tested.results.filter((r) => !r.skipped);
+    const allOk = ran.length > 0 && ran.every((r) => r.ok);
+    testCard = html`<section class="card ${allOk ? "success" : "error"}">
+      <h2>${icon(allOk ? "check" : "alert")}${allOk ? "測試通過" : "測試有問題，請換一個模型再試"}</h2>
+      ${d.tested.results.map(
+        (r) => html`<div class="test-result">
+          <p><b>${r.label}</b>：${r.model}　${r.skipped ? html`<span class="muted">（略過）</span>` : r.ok ? html`<span class="muted">${r.seconds} 秒 · 輸入 ${r.promptTokens} / 輸出 ${r.completionTokens} tokens</span>` : ""}</p>
+          ${r.ok ? html`<pre class="final">${r.answer}</pre>` : html`<p class="muted">${(r.error ?? "").split("｜")[0]}${r.error?.includes("｜") ? `（${r.error.split("｜")[1]}）` : ""}</p>`}
+        </div>`,
+      )}
+      ${allOk
+        ? html`<form method="post" action="/settings" class="stack">${csrfField(d.csrf)}
+            <input type="hidden" name="model_image" value="${d.tested.input.modelImage}">
+            <input type="hidden" name="model_text" value="${d.tested.input.modelText}">
+            <input type="hidden" name="effort" value="${d.tested.input.effort}">
+            <button class="primary" type="submit">${icon("check")}套用這組設定</button>
+          </form>`
+        : ""}
+    </section>`;
+  }
+
+  const resetForm =
+    canEdit && Object.keys(d.config.custom).length
+      ? html`<form method="post" action="/settings/reset" class="dismiss-row">${csrfField(d.csrf)}<button class="link" type="submit">${icon("undo")}全部恢復預設值</button></form>`
+      : "";
+
+  const logCard = html`<section class="card">
+    <h2>${icon("clock")}變更紀錄</h2>
+    ${d.log.length === 0
+      ? html`<p class="empty">還沒有變更過</p>`
+      : html`<ul class="log">${d.log.map(
+          (l) => html`<li>
+            <span class="muted">${formatTaipei(l.changed_at)} · ${l.changed_by === "cheng_jie" || l.changed_by === "tutor" ? ROLE_LABEL[l.changed_by] : l.changed_by}</span>
+            <span>${SETTING_LABEL[l.key] ?? l.key}：${l.old_value ?? "預設"} → <b>${l.new_value ?? "預設"}</b></span>
+            ${canEdit && l.old_value
+              ? html`<form method="post" action="/settings/revert/${l.id}">${csrfField(d.csrf)}<button class="link" type="submit">${icon("undo")}改回 ${l.old_value}</button></form>`
+              : ""}
+          </li>`,
+        )}</ul>`}
+  </section>`;
+
+  const body = html`
+  ${flash(d.flashCode)}
+  <h1>AI 設定</h1>
+  ${current}
+  ${testCard}
+  ${editor}
+  ${resetForm}
+  ${logCard}`;
+  return layout("AI 設定", body, d.role, d.csrf);
 }
