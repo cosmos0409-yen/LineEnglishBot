@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-10-28　目前階段：**Phase 4 完成；改名、AI 設定頁、待處理清單 bug 修正已部署；等新的 OpenAI 金鑰與業主 LINE 權限後進 Phase 5**
+> 最後更新：2026-11-04　目前階段：**Phase 5 切換中：已接上業主正式 LINE 帳號、通知改發正式導師群組；待實機傳題驗證**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -69,9 +69,11 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
 
-- 🚧 **OpenAI 金鑰失效**（10/27 下午換上的新 key 約一小時後也失效，第四次）。AI 相關功能都無法使用，需使用者查明原因後換新 key（建議永不過期、專用 Project）
+- ⏳ **OpenAI 金鑰 11/4 已換新**（前四把都失效過），尚待實際題目確認可用
 - ⚠️ AI 設定頁「測試通過 → 套用」與「模型失效自動退回」尚未用真實 OpenAI 驗證（端對端 58 項中，需要 AI 的 8 項因金鑰失效未通過，其餘全過）
-- ⏳ Phase 5 切換清單：業主 LINE 權限（或 Channel secret＋重新發行的 access token）、Webhook、回應設定、`TELEGRAM_CHAT_ID` 改為 `-5224723425`、詢問業主方案（輕用量每月 200 則推播）
+- ✅ Phase 5 切換（11/4）：雲端 LINE 金鑰已換成業主正式帳號「非凡英文輔導專區」（`@220xefam`）；Webhook 指向本服務且開啟（LINE 官方 webhook 測試 200）；聊天模式開、已讀手動；方案為輕用量每月 200 則推播；`TELEGRAM_CHAT_ID` 已改為正式導師群組 `-5224723425`
+- ⏳ Phase 5 剩餘：實機傳題驗證（草稿、審核、推播、已讀）、確認「自動回應訊息」已關、舊資料匯入決定、導師試用、PIN 強度
+- ⚠️ 換成正式帳號後，使用者自己的測試官方帳號已無法使用（Webhook 簽章不符）；正式 Telegram 群組若升級為超級群組，ID 會改變（變成 -100 開頭），通知會失敗要重設
 
 - 🚧 **wrangler 在中文路徑 `C:\LINE官方帳號開發` 會無聲結束（exit 127）**：2026-10-27 發現（10/18 還正常，可能是 Windows 更新）。複製到英文路徑可正常打包。
   暫時做法：`subst L: C:\LINE官方帳號開發` 後，在 `L:\cf` 執行 wrangler。subst 重開機後消失。長期做法：把專案搬到英文路徑，或設定開機自動 subst
@@ -79,8 +81,6 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 - ⚠️ OpenAI 金鑰已第三次失效（10/2、10/17、10/27）；GitHub 從未上傳過金鑰。請使用者到 OpenAI 後台確認到期設定與誰能管理金鑰
 - ✅ AI 錯誤分類（10/27）：金鑰失效、額度用完、模型設定錯不再重試，Telegram 與審核頁直接寫明原因
 
-- ⚠️ 雲端目前的 `TELEGRAM_CHAT_ID` 是**測試群組**；正式上線（Phase 5）要改成正式導師群組
-- ⚠️ 雲端 LINE 金鑰仍是測試值：推播與標已讀在 Phase 4 換上真實測試帳號前都會失敗
 - ⚠️ 老師對真正的非英文訊息強制「產生 AI 草稿」時，草稿可能不自然（例如「建議直接問老師」）；之後調整 Prompt
 - ⚠️ 本機所有請求的 IP 都是 `local`：跑完 review-flow（會觸發鎖定）後要清 `login_failures` 才能手動登入
 - ℹ️ 內建瀏覽器送表單時 Origin 是 `null`，所以 CSRF 改用 token；`Referrer-Policy` 用 `same-origin`（`no-referrer` 也會讓 Origin 變 null）
