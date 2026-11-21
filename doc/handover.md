@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-11-04　目前階段：**Phase 5 切換中：已接上業主正式 LINE 帳號、通知改發正式導師群組；待實機傳題驗證**
+> 最後更新：2026-11-21　目前階段：**Phase 5 正式營運中（業主正式 LINE 帳號＋正式導師群組）；11/21 修正 Telegram 通知失敗會卡住、吞訊息的問題**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -39,6 +39,16 @@
   - AI 設定頁 `/settings`（`settings.ts`、migration `0005_settings.sql`）：只有老師1 能修改；測試通過才能套用；模型失效自動退回預設並提醒
   - AI 錯誤分類：金鑰失效、額度用完、模型設定錯直接通知並寫明原因，不重試
 
+- **2026-11-21 Telegram 通知補發**（version `5be6b7fd`，遠端已套用 `0006_notify_retry.sql`）：
+  - 起因：業主回報「有時 TG 沒跳通知」。查 11/17–11/21 共 80 題：AI 全部成功、77 題在 6 秒內通知；但 11/18 晚上 Telegram 發送連續失敗，
+    alarm 重試 6 次（約 4 分鐘）用完後整批卡在 DO，有 2 題分別延遲 13、43 小時才因學生再傳訊息而補發；
+    卡住期間同一學生補傳的 2 則文字被併進舊批次而**沒有成為題目**（已請業主直接回覆該生）。失敗原因因 log 只留 3 天已查不到
+  - `buffer.ts`：題目存好就清掉 pending，通知改由 `notify()` 發送，失敗只記錄、不丟例外 → 不再卡住或吞掉之後的訊息
+  - `db.ts`：`claimNotify`（租約 3 分鐘，避免排程與緩衝區同時發）、`recordNotifyError`（失敗原因寫進 `questions.notify_error`、放掉租約）、`listUnnotified`
+  - 每 5 分鐘 cron（`*/5 * * * *`）呼叫 DO 的 `retryNotify` 補發 2 天內還沒通知成功的題目；每日清理排程用 `DAILY_CRON` 區分
+  - `telegram.ts`：429 照 `retry_after` 等待後重送（≤30 秒、最多 2 次），等更久的交給排程
+  - 測試：單元 57 項全過（新增補發租約、補發清單、429 重送）；端對端新增「Telegram 故障」4 項全過
+
 ## 2. 當前狀態（Current State）
 
 | 項目 | 狀態 | 證據 |
@@ -69,10 +79,11 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 
 ## 4. 已知問題與待釐清（Issues / Blockers）
 
-- ⏳ **OpenAI 金鑰 11/4 已換新**（前四把都失效過），尚待實際題目確認可用
-- ⚠️ AI 設定頁「測試通過 → 套用」與「模型失效自動退回」尚未用真實 OpenAI 驗證（端對端 58 項中，需要 AI 的 8 項因金鑰失效未通過，其餘全過）
+- ✅ 雲端 OpenAI 金鑰（11/4 後更換）運作正常：11/17–11/21 正式學生 80 題 AI 全部成功
+- ⚠️ 本機 `cf/.dev.vars` 的 OpenAI 金鑰仍是失效的舊 key：端對端 62 項中需要真實 AI 的 9 項無法通過（AI 分類非英文、產生草稿、設定頁測試、自動退回），其餘 53 項全過
+- ⚠️ AI 設定頁「測試通過 → 套用」與「模型失效自動退回」尚未用真實 OpenAI 驗證
 - ✅ Phase 5 切換（11/4）：雲端 LINE 金鑰已換成業主正式帳號「非凡英文輔導專區」（`@220xefam`）；Webhook 指向本服務且開啟（LINE 官方 webhook 測試 200）；聊天模式開、已讀手動；方案為輕用量每月 200 則推播；`TELEGRAM_CHAT_ID` 已改為正式導師群組 `-5224723425`
-- ⏳ Phase 5 剩餘：實機傳題驗證（草稿、審核、推播、已讀）、確認「自動回應訊息」已關、舊資料匯入決定、導師試用、PIN 強度
+- ⏳ Phase 5 剩餘：確認「自動回應訊息」已關、舊資料匯入決定、PIN 強度（正式學生已在使用：11/17 起每天都有提問與送出）
 - ⚠️ 換成正式帳號後，使用者自己的測試官方帳號已無法使用（Webhook 簽章不符）；正式 Telegram 群組若升級為超級群組，ID 會改變（變成 -100 開頭），通知會失敗要重設
 
 - 🚧 **wrangler 在中文路徑 `C:\LINE官方帳號開發` 會無聲結束（exit 127）**：2026-10-27 發現（10/18 還正常，可能是 Windows 更新）。複製到英文路徑可正常打包。
@@ -85,8 +96,10 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 - ⚠️ 本機所有請求的 IP 都是 `local`：跑完 review-flow（會觸發鎖定）後要清 `login_failures` 才能手動登入
 - ℹ️ 內建瀏覽器送表單時 Origin 是 `null`，所以 CSRF 改用 token；`Referrer-Policy` 用 `same-origin`（`no-referrer` 也會讓 Origin 變 null）
 - ℹ️ bot（@AiTeacher0223bot）開著隱私模式：查群組 ID 時要在群組傳 `/start@AiTeacher0223bot`
-- ⚠️ Telegram 中途失敗時，alarm 重試會整組重發，可能重複收到照片或訊息（不影響資料正確性）
-- ⚠️ Telegram 在最後一次重試仍失敗時，該批會留在 DO 的 pending，等同一學生下次傳訊息才再處理，而且沒有其他通知管道
+- ⚠️ Telegram 通知發到一半失敗（例如照片已送、文字失敗）時，補發會整組重發，可能重複收到照片（不影響資料正確性）
+- ⚠️ 長草稿每段 3000 字再做 HTML 跳脫，大量 `&`、`<` 時可能超過 Telegram 4096 字上限而被截斷、格式錯誤（400）；目前沒發生過，`notify_error` 會記下
+- ✅ 已修（11/21）：Telegram 最後一次重試仍失敗時整批卡在 pending、吞掉之後訊息的問題；改為每 5 分鐘排程補發 2 天內的題目
+- ℹ️ 查通知失敗原因：`SELECT id, notify_attempts, notify_error FROM questions WHERE notify_error IS NOT NULL`（成功後會清空 `notify_error`）
 - ⚠️ 照片 D1 免費上限 500 MB：依過去用量，180 天約 160 MB。用量變大時，改用 R2 或多開一個 D1
 - 本機 `cf/.wrangler/state` 保留模擬資料，需要時可刪除
 

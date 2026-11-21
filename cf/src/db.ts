@@ -18,6 +18,9 @@ export interface QuestionRow {
   final_answer: string | null;
   status: string;
   notified_at: number | null;
+  notify_attempts: number;
+  notify_attempt_at: number | null;
+  notify_error: string | null;
   created_at: number;
 }
 
@@ -120,5 +123,39 @@ export async function createQuestion(env: Env, q: NewQuestion): Promise<Question
 }
 
 export async function markNotified(env: Env, questionId: string, now = Date.now()): Promise<void> {
-  await env.DB.prepare("UPDATE questions SET notified_at = ? WHERE id = ? AND notified_at IS NULL").bind(now, questionId).run();
+  await env.DB.prepare("UPDATE questions SET notified_at = ?, notify_error = NULL WHERE id = ? AND notified_at IS NULL").bind(now, questionId).run();
+}
+
+// 一次發送最多等 Telegram 限流約 1 分鐘；租約要比這長，才不會發到一半被排程搶去重發
+export const NOTIFY_LEASE_MS = 3 * 60 * 1000;
+// 超過 2 天還發不出去就不再補發（題目仍在審核頁的待處理清單上）
+export const NOTIFY_GIVE_UP_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** 取得發送通知的權利：還沒通知成功、且沒有人正在發（或上一次已超過租約）時才回傳 true。 */
+export async function claimNotify(env: Env, questionId: string, now = Date.now()): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `UPDATE questions SET notify_attempts = notify_attempts + 1, notify_attempt_at = ?
+      WHERE id = ? AND notified_at IS NULL AND (notify_attempt_at IS NULL OR notify_attempt_at < ?)
+      RETURNING id`,
+  )
+    .bind(now, questionId, now - NOTIFY_LEASE_MS)
+    .first();
+  return Boolean(row);
+}
+
+/** 記下失敗原因並放掉租約：下一次排程就能再試（租約只用來擋「正在發」的重複）。 */
+export async function recordNotifyError(env: Env, questionId: string, error: string): Promise<void> {
+  await env.DB.prepare("UPDATE questions SET notify_error = ?, notify_attempt_at = NULL WHERE id = ?").bind(error.slice(0, 500), questionId).run();
+}
+
+/** 排程補發用：2 天內、還沒通知成功、目前沒有人正在發的題目（由舊到新）。 */
+export async function listUnnotified(env: Env, now = Date.now(), limit = 20): Promise<{ id: string; student_line_id: string }[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT id, student_line_id FROM questions
+      WHERE notified_at IS NULL AND created_at > ? AND (notify_attempt_at IS NULL OR notify_attempt_at < ?)
+      ORDER BY created_at LIMIT ?`,
+  )
+    .bind(now - NOTIFY_GIVE_UP_MS, now - NOTIFY_LEASE_MS, limit)
+    .run<{ id: string; student_line_id: string }>();
+  return results;
 }

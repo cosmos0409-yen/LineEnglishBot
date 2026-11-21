@@ -14,6 +14,8 @@ const pushes = []; // { to, retryKey, texts }
 const reads = [];
 const telegramTexts = []; // 假 Telegram 收到的 sendMessage 內容
 let failPushes = 0; // > 0 時，接下來幾次推播回 500
+let failTelegram = false; // true 時，假 Telegram 一律回 500（模擬 Telegram 故障）
+let telegramFailures = 0;
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -49,6 +51,10 @@ const mock = createServer(async (req, res) => {
   if (req.url === "/v2/bot/chat/markAsRead") {
     reads.push(JSON.parse(body).markAsReadToken);
     return json(200, {});
+  }
+  if (failTelegram && /^\/bot[^/]+\/send(Message|Photo)$/.test(req.url)) {
+    telegramFailures++;
+    return json(500, { ok: false, description: "mock failure" });
   }
   if (/^\/bot[^/]+\/sendMessage$/.test(req.url)) {
     telegramTexts.push(JSON.parse(body).text);
@@ -327,6 +333,30 @@ async function main() {
   const reset = await http("/settings/reset", { method: "POST", cookie: cj });
   const afterReset = await http("/settings", { cookie: cj });
   check("全部恢復預設值", reset.location === "/settings?m=settings_reset" && !afterReset.text.includes('badge class">自訂'));
+
+  // 10.8 Telegram 故障：題目照樣建立、不會吞掉學生之後的訊息，恢復後由排程補發（不重複）
+  const kName = `R${RUN}-K`;
+  const kNotices = () => telegramTexts.filter((t) => t.includes(kName)).length;
+  const kQuestions = async () => {
+    const r = await http(`/queue?student=${encodeURIComponent(uid("K"))}`, { cookie: tutor });
+    return new Set([...r.text.matchAll(/href="\/review\/([0-9a-f-]{36})">[\s\S]*?<b>([^<]+)<\/b>/g)].filter((m) => m[2] === kName).map((m) => m[1])).size;
+  };
+  failTelegram = true;
+  await sendWebhook(uid("K"), "take after 是什麼意思");
+  const qk = await findQuestionId(tutor, "K");
+  for (let i = 0; i < 20 && telegramFailures === 0; i++) await new Promise((r) => setTimeout(r, 500));
+  check("Telegram 故障時題目照樣建立（通知失敗）", qk && telegramFailures > 0 && kNotices() === 0, `qk=${qk} failures=${telegramFailures}`);
+  await sendWebhook(uid("K"), "那 look after 呢");
+  let kCount = 0;
+  for (let i = 0; i < 40 && (kCount = await kQuestions()) < 2; i++) await new Promise((r) => setTimeout(r, 1000));
+  check("通知失敗不會卡住同一位學生之後的訊息（成為新的一題）", kCount === 2, `題數=${kCount}`);
+  failTelegram = false;
+  await fetch(`${WORKER}/__scheduled?cron=${encodeURIComponent("*/5 * * * *")}`);
+  for (let i = 0; i < 20 && kNotices() < 2; i++) await new Promise((r) => setTimeout(r, 500));
+  check("Telegram 恢復後，排程把兩題的通知補發出去", kNotices() === 2, `通知數=${kNotices()}`);
+  await fetch(`${WORKER}/__scheduled?cron=${encodeURIComponent("*/5 * * * *")}`);
+  await new Promise((r) => setTimeout(r, 2000));
+  check("已補發的題目，下一次排程不會重複通知", kNotices() === 2, `通知數=${kNotices()}`);
 
   // 11. PIN 錯太多次 → 鎖定
   for (let i = 0; i < 5; i++) await http("/login", { method: "POST", form: { pin: "999999", next: "/queue" } });

@@ -13,6 +13,7 @@ import {
   type Role,
 } from "./auth";
 import type { BufferedMessage } from "./buffer";
+import { listUnnotified } from "./db";
 import { deleteExpiredImages } from "./images";
 import { verifySignature } from "./line";
 import { loginPage, notFoundPage, queuePage, reviewPage, settingsPage, studentPage, studentsPage } from "./pages";
@@ -22,6 +23,9 @@ import { APP_CSS, APP_JS } from "./static";
 import { CLASS_MAX, cleanField, getStudent, listStudentQuestions, listStudents, NAME_MAX, updateStudent } from "./students";
 
 export { StudentBuffer } from "./buffer";
+
+// 每天台灣時間 03:00 的清理排程（必須和 wrangler.jsonc 的 triggers.crons 一致）；其餘排程是通知補發
+const DAILY_CRON = "0 19 * * *";
 
 interface LineWebhookBody {
   events?: {
@@ -315,10 +319,20 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 
-  // 每天：清除超過保存期限的照片與過期的 PIN 錯誤紀錄（排程見 wrangler.jsonc 的 triggers.crons）
-  async scheduled(_controller, env): Promise<void> {
-    const deleted = await deleteExpiredImages(env);
-    await purgeOldFailures(env);
-    console.log(JSON.stringify({ event: "daily_cleanup", deletedImages: deleted }));
+  // 排程見 wrangler.jsonc 的 triggers.crons（兩組字串要一致）
+  async scheduled(controller, env): Promise<void> {
+    // 每天：清除超過保存期限的照片與過期的 PIN 錯誤紀錄
+    if (controller.cron === DAILY_CRON) {
+      const deleted = await deleteExpiredImages(env);
+      await purgeOldFailures(env);
+      console.log(JSON.stringify({ event: "daily_cleanup", deletedImages: deleted }));
+      return;
+    }
+    // 每 5 分鐘：補發失敗的 Telegram 通知（照片在 DO 讀取，這裡只查清單，CPU 用量很小）
+    const pending = await listUnnotified(env);
+    if (pending.length === 0) return;
+    let sent = 0;
+    for (const q of pending) if (await env.STUDENT_BUFFER.getByName(q.student_line_id).retryNotify(q.id)) sent++;
+    console.log(JSON.stringify({ event: "notify_retry", pending: pending.length, sent }));
   },
 } satisfies ExportedHandler<Env>;

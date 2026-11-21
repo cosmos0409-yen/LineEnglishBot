@@ -5,7 +5,10 @@ import { toTextBubbles } from "../src/line";
 import { CLASS_MAX, cleanField, NAME_MAX, studentLabel } from "../src/students";
 import { getAiConfig, isValidModelId, validateAiInput } from "../src/settings";
 import { OPEN_CONDITION } from "../src/review";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { claimNotify, listUnnotified, markNotified, NOTIFY_GIVE_UP_MS, NOTIFY_LEASE_MS, recordNotifyError } from "../src/db";
 
 const env = (over: Partial<Record<string, string>> = {}) =>
   ({ SESSION_SECRET: "test-secret", PIN_CHENG_JIE: "111111", PIN_TUTOR: "222222", ...over }) as unknown as Env;
@@ -107,6 +110,66 @@ describe("待處理清單的條件（OPEN_CONDITION）", () => {
     for (const r of rows) insert.run(...r);
     const open = (db.prepare(`SELECT id FROM questions q WHERE ${OPEN_CONDITION} ORDER BY id`).all() as { id: string }[]).map((r) => r.id);
     expect(open).toEqual(["ai_failed", "need_info", "non_question_forced_sent", "push_failed", "question"]);
+  });
+});
+
+/** 用 node:sqlite 模擬 D1（只實作這裡用到的 prepare/bind/first/run），資料表由實際的 migration 建立。 */
+function sqliteD1() {
+  const db = new DatabaseSync(":memory:");
+  const dir = join(__dirname, "../migrations/main");
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  const prepare = (sql: string) => {
+    let args: SQLInputValue[] = [];
+    const stmt = {
+      bind: (...a: SQLInputValue[]) => ((args = a), stmt),
+      first: async () => db.prepare(sql).get(...args) ?? null,
+      run: async () => ({ results: db.prepare(sql).all(...args) }),
+    };
+    return stmt;
+  };
+  return { db, env: { DB: { prepare } } as unknown as Env };
+}
+
+describe("Telegram 通知補發（claimNotify / listUnnotified）", () => {
+  const now = Date.UTC(2026, 10, 21, 12, 0);
+  const setup = () => {
+    const t = sqliteD1();
+    const add = (id: string, createdAt: number, notifiedAt: number | null = null) =>
+      t.db
+        .prepare(
+          `INSERT INTO questions (id, batch_id, student_line_id, student_name, image_ids, ai_status, status, notified_at, created_at, updated_at)
+           VALUES (?, ?, ?, 'x', '[]', 'ok', 'pending', ?, ?, ?)`,
+        )
+        .run(id, `b-${id}`, `U-${id}`, notifiedAt, createdAt, createdAt);
+    return { ...t, add };
+  };
+
+  it("同一題同時只有一個人能發；超過租約或還沒成功才能再發", async () => {
+    const { env, db, add } = setup();
+    add("q1", now - 60_000);
+    expect(await claimNotify(env, "q1", now)).toBe(true);
+    expect(await claimNotify(env, "q1", now + 1000)).toBe(false); // 租約中（例如排程和緩衝區同時想發）
+    expect(await claimNotify(env, "q1", now + NOTIFY_LEASE_MS + 1)).toBe(true); // 發到一半當掉、租約已過
+    expect((db.prepare("SELECT notify_attempts FROM questions WHERE id = 'q1'").get() as { notify_attempts: number }).notify_attempts).toBe(2);
+
+    await recordNotifyError(env, "q1", "Telegram sendMessage 500: x");
+    expect(await claimNotify(env, "q1", now + NOTIFY_LEASE_MS + 2)).toBe(true); // 失敗會放掉租約，下一次排程馬上能再試
+    await markNotified(env, "q1", now + NOTIFY_LEASE_MS + 3);
+    const row = db.prepare("SELECT notified_at, notify_error FROM questions WHERE id = 'q1'").get() as { notified_at: number; notify_error: string | null };
+    expect(row.notify_error).toBeNull(); // 成功後清掉錯誤原因
+    expect(await claimNotify(env, "q1", now + 10 * NOTIFY_LEASE_MS)).toBe(false); // 已通知的不再發
+  });
+
+  it("補發清單：只列 2 天內、還沒通知、不在租約中的題目，由舊到新", async () => {
+    const { env, add } = setup();
+    add("new", now - 60_000);
+    add("old_ok", now - 2 * 3600_000);
+    add("notified", now - 60_000, now - 50_000);
+    add("too_old", now - NOTIFY_GIVE_UP_MS - 1);
+    add("leased", now - 60_000);
+    await claimNotify(env, "leased", now - 1000);
+    expect((await listUnnotified(env, now)).map((r) => r.id)).toEqual(["old_ok", "new"]);
+    expect((await listUnnotified(env, now)).find((r) => r.id === "new")?.student_line_id).toBe("U-new");
   });
 });
 

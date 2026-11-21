@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { verifySignature } from "../src/line";
+import { sendMessage } from "../src/telegram";
 import { AI_ERROR_REASON, classifyOpenAIError } from "../src/openai";
 import { bytesToBase64, cleanAnswer, escapeHtml, isSocialOnly, splitText } from "../src/text";
 
@@ -98,5 +99,34 @@ describe("bytesToBase64", () => {
   it("大檔案與 Node Buffer 結果一致", () => {
     const bytes = new Uint8Array(200_000).map((_, i) => (i * 31) % 256);
     expect(bytesToBase64(bytes)).toBe(Buffer.from(bytes).toString("base64"));
+  });
+});
+
+describe("Telegram 限流（429）", () => {
+  const env = { TELEGRAM_API_BASE: "https://tg.test", TELEGRAM_BOT_TOKEN: "t", TELEGRAM_CHAT_ID: "-1" } as unknown as Env;
+  const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("照 retry_after 等待後重送成功", async () => {
+    const calls: number[] = [];
+    vi.stubGlobal("fetch", async () => {
+      calls.push(Date.now());
+      return calls.length === 1 ? reply(429, { ok: false, parameters: { retry_after: 1 } }) : reply(200, { ok: true });
+    });
+    await sendMessage(env, "hi");
+    expect(calls.length).toBe(2);
+    expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("要等太久或一直被限流就丟錯（交給排程補發），其他錯誤不重送", async () => {
+    let n = 0;
+    vi.stubGlobal("fetch", async () => (n++, reply(429, { ok: false, parameters: { retry_after: 120 } })));
+    await expect(sendMessage(env, "hi")).rejects.toThrow(/429/);
+    expect(n).toBe(1);
+
+    n = 0;
+    vi.stubGlobal("fetch", async () => (n++, reply(400, { ok: false, description: "Bad Request: can't parse entities" })));
+    await expect(sendMessage(env, "hi")).rejects.toThrow(/400.*parse entities/);
+    expect(n).toBe(1);
   });
 });

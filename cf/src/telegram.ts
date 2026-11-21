@@ -17,11 +17,30 @@ function apiUrl(env: Env, method: string): string {
   return `${env.TELEGRAM_API_BASE || DEFAULT_API_BASE}/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
 }
 
+// 被限流（429）時照 Telegram 指定的秒數等待後重送；等太久的交給排程稍後補發
+const MAX_RETRY_AFTER_S = 30;
+const MAX_RATE_LIMIT_RETRIES = 2;
+
 async function callApi(env: Env, method: string, init: RequestInit): Promise<void> {
-  const resp = await fetch(apiUrl(env, method), init);
-  if (!resp.ok) {
-    // 丟出例外讓 alarm 重試；錯誤訊息不含 token
-    throw new Error(`Telegram ${method} ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(apiUrl(env, method), init);
+    if (resp.ok) return;
+    const text = await resp.text();
+    if (resp.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+      let retryAfter: number | undefined;
+      try {
+        retryAfter = (JSON.parse(text) as { parameters?: { retry_after?: number } }).parameters?.retry_after;
+      } catch {
+        // 回應不是 JSON：當作沒有指定秒數
+      }
+      if (retryAfter !== undefined && retryAfter <= MAX_RETRY_AFTER_S) {
+        console.log(JSON.stringify({ event: "telegram_rate_limited", method, retryAfter, attempt }));
+        await new Promise((r) => setTimeout(r, retryAfter * 1000 + 200));
+        continue;
+      }
+    }
+    // 錯誤訊息不含 token
+    throw new Error(`Telegram ${method} ${resp.status}: ${text.slice(0, 200)}`);
   }
 }
 

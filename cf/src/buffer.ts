@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { createQuestion, getHistory, getQuestionByBatch, markNotified, recordStudentMessages, type QuestionRow } from "./db";
+import { claimNotify, createQuestion, getHistory, getQuestionByBatch, markNotified, recordNotifyError, recordStudentMessages, type QuestionRow } from "./db";
 import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
 import { AI_ERROR_REASON, AiError, generateDraft, type AiErrorKind, type DraftInput, type DraftResult, type HistoryTurn } from "./openai";
@@ -76,18 +76,52 @@ export class StudentBuffer extends DurableObject<Env> {
     const messages = rows.map((r) => JSON.parse(r.body) as BufferedMessage);
 
     const retryCount = alarmInfo?.retryCount ?? 0;
+    let processed: { question: QuestionRow; images: StoredImage[] } | null;
     try {
-      await this.processBatch(userId, messages, retryCount);
+      processed = await this.processBatch(userId, messages, retryCount);
     } catch (err) {
       // 記下是哪一批、第幾次重試、錯在哪，再丟出讓 alarm 重試
       console.log(JSON.stringify({ event: "batch_failed", userId, batchId: messages[0].webhookEventId, retryCount, error: String(err).slice(0, 500) }));
       throw err;
     }
 
+    // 題目存好就清掉這一批：Telegram 通知失敗不能卡住學生之後傳的訊息（失敗的通知由排程補發）
     this.ctx.storage.sql.exec(`DELETE FROM pending WHERE seq <= ?`, maxSeq);
+    if (processed) await this.notify(processed.question, processed.images);
   }
 
-  private async processBatch(userId: string, messages: BufferedMessage[], retryCount: number): Promise<void> {
+  /** 排程補發：通知失敗的題目每 5 分鐘再試一次。 */
+  async retryNotify(questionId: string): Promise<boolean> {
+    const q = await getQuestion(this.env, questionId);
+    return q ? this.notify(q) : false;
+  }
+
+  /**
+   * 發 Telegram 通知。先取得發送權（避免排程與這裡同時發），失敗時把原因寫進資料庫、不丟例外。
+   * 回傳是否這次發送成功。
+   */
+  private async notify(question: QuestionRow, images: StoredImage[] = []): Promise<boolean> {
+    if (question.notified_at !== null || !(await claimNotify(this.env, question.id))) return false;
+    const log = (event: string, extra: Record<string, unknown> = {}) =>
+      console.log(JSON.stringify({ event, questionId: question.id, attempt: question.notify_attempts + 1, ...extra }));
+    try {
+      if (images.length === 0) images = await this.loadQuestionImages(question);
+      // 通知用老師設定的備註名稱（沒設定就用 LINE 暱稱）
+      const student = await getStudent(this.env, question.student_line_id);
+      await notifyQuestion(this.env, question, images, student ? studentLabel(student) : question.student_name);
+      await markNotified(this.env, question.id);
+      log("telegram_notified");
+      return true;
+    } catch (err) {
+      const error = String(err).slice(0, 500);
+      log("telegram_notify_failed", { error });
+      await recordNotifyError(this.env, question.id, error).catch(() => {});
+      return false;
+    }
+  }
+
+  /** 處理一批訊息，回傳要通知的題目（社交回應等不需要題目的批次回傳 null）。 */
+  private async processBatch(userId: string, messages: BufferedMessage[], retryCount: number): Promise<{ question: QuestionRow; images: StoredImage[] } | null> {
     const batchId = messages[0].webhookEventId;
     const firstTs = Math.min(...messages.map((m) => m.timestamp));
     const texts = messages.filter((m) => m.type === "text" && m.text).map((m) => m.text as string);
@@ -111,8 +145,14 @@ export class StudentBuffer extends DurableObject<Env> {
       })),
     );
 
-    if (imageIds.length === 0 && text === null) return log("batch_skipped_no_content");
-    if (isSocialOnly(text, imageIds.length > 0)) return log("batch_skipped_social", { text });
+    if (imageIds.length === 0 && text === null) {
+      log("batch_skipped_no_content");
+      return null;
+    }
+    if (isSocialOnly(text, imageIds.length > 0)) {
+      log("batch_skipped_social", { text });
+      return null;
+    }
 
     let question = await getQuestionByBatch(this.env, batchId);
     let images: StoredImage[] = [];
@@ -178,14 +218,7 @@ export class StudentBuffer extends DurableObject<Env> {
       }
     }
 
-    if (question.notified_at === null) {
-      if (images.length === 0) images = await this.loadQuestionImages(question);
-      // 通知用老師設定的備註名稱（沒設定就用 LINE 暱稱）
-      const student = await getStudent(this.env, userId);
-      await notifyQuestion(this.env, question, images, student ? studentLabel(student) : question.student_name);
-      await markNotified(this.env, question.id);
-      log("telegram_notified", { questionId: question.id });
-    }
+    return { question, images };
   }
 
   /** 下載並存入 IMAGES_DB（已存的直接讀回）。下載失敗時，還有重試機會就丟例外，不會少了照片照樣解題。 */

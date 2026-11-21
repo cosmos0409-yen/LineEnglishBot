@@ -21,9 +21,9 @@
 	"observability": {
 		"enabled": true
 	},
-	// 每天台灣時間 03:00 清除 180 天前的照片
+	// 每天台灣時間 03:00 清除 180 天前的照片；每 5 分鐘補發失敗的 Telegram 通知（字串要和 src/index.ts 的 DAILY_CRON 一致）
 	"triggers": {
-		"crons": ["0 19 * * *"]
+		"crons": ["0 19 * * *", "*/5 * * * *"]
 	},
 	// 非機密設定；金鑰與 Telegram 群組 ID 一律用 `wrangler secret put`（本機用 .dev.vars）
 	"vars": {
