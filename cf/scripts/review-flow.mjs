@@ -13,6 +13,7 @@ const uid = (s) => `U_${RUN}_${s}`;
 const pushes = []; // { to, retryKey, texts }
 const reads = [];
 const telegramTexts = []; // 假 Telegram 收到的 sendMessage 內容
+const telegramSilent = []; // 其中靜音發送（disable_notification）的內容
 let failPushes = 0; // > 0 時，接下來幾次推播回 500
 let failTelegram = false; // true 時，假 Telegram 一律回 500（模擬 Telegram 故障）
 let telegramFailures = 0;
@@ -57,7 +58,9 @@ const mock = createServer(async (req, res) => {
     return json(500, { ok: false, description: "mock failure" });
   }
   if (/^\/bot[^/]+\/sendMessage$/.test(req.url)) {
-    telegramTexts.push(JSON.parse(body).text);
+    const data = JSON.parse(body);
+    telegramTexts.push(data.text);
+    if (data.disable_notification) telegramSilent.push(data.text);
     return json(200, { ok: true, result: {} });
   }
   if (/^\/bot[^/]+\/sendPhoto$/.test(req.url)) return json(200, { ok: true, result: {} });
@@ -335,28 +338,59 @@ async function main() {
   check("全部恢復預設值", reset.location === "/settings?m=settings_reset" && !afterReset.text.includes('badge class">自訂'));
 
   // 10.8 Telegram 故障：題目照樣建立、不會吞掉學生之後的訊息，恢復後由排程補發（不重複）
-  const kName = `R${RUN}-K`;
-  const kNotices = () => telegramTexts.filter((t) => t.includes(kName)).length;
-  const kQuestions = async () => {
-    const r = await http(`/queue?student=${encodeURIComponent(uid("K"))}`, { cookie: tutor });
-    return new Set([...r.text.matchAll(/href="\/review\/([0-9a-f-]{36})">[\s\S]*?<b>([^<]+)<\/b>/g)].filter((m) => m[2] === kName).map((m) => m[1])).size;
+  const countQuestions = async (letter) => {
+    const r = await http(`/queue?student=${encodeURIComponent(uid(letter))}`, { cookie: tutor });
+    return new Set([...r.text.matchAll(/href="\/review\/([0-9a-f-]{36})">[\s\S]*?<b>([^<]+)<\/b>/g)].filter((m) => m[2] === `R${RUN}-${letter}`).map((m) => m[1])).size;
   };
+  const kName = `R${RUN}-K`;
+  const kNotices = () => telegramTexts.filter((t) => t.includes(kName));
   failTelegram = true;
   await sendWebhook(uid("K"), "take after 是什麼意思");
   const qk = await findQuestionId(tutor, "K");
   for (let i = 0; i < 20 && telegramFailures === 0; i++) await new Promise((r) => setTimeout(r, 500));
-  check("Telegram 故障時題目照樣建立（通知失敗）", qk && telegramFailures > 0 && kNotices() === 0, `qk=${qk} failures=${telegramFailures}`);
+  check("Telegram 故障時題目照樣建立（通知失敗）", qk && telegramFailures > 0 && kNotices().length === 0, `qk=${qk} failures=${telegramFailures}`);
+  const failuresBefore = telegramFailures;
   await sendWebhook(uid("K"), "那 look after 呢");
-  let kCount = 0;
-  for (let i = 0; i < 40 && (kCount = await kQuestions()) < 2; i++) await new Promise((r) => setTimeout(r, 1000));
-  check("通知失敗不會卡住同一位學生之後的訊息（成為新的一題）", kCount === 2, `題數=${kCount}`);
+  // 第二則併入同一題：等它處理完（會再試一次通知、再失敗一次）
+  for (let i = 0; i < 40 && telegramFailures === failuresBefore; i++) await new Promise((r) => setTimeout(r, 500));
+  const kPage = await http(`/review/${qk}`, { cookie: tutor });
+  check("通知失敗不會吞掉之後的訊息（併入同一題，題目內容有第二則）", (await countQuestions("K")) === 1 && kPage.text.includes("那 look after 呢") && kPage.text.includes("學生分 2 次傳"),
+    `題數=${await countQuestions("K")}`);
   failTelegram = false;
   await fetch(`${WORKER}/__scheduled?cron=${encodeURIComponent("*/5 * * * *")}`);
-  for (let i = 0; i < 20 && kNotices() < 2; i++) await new Promise((r) => setTimeout(r, 500));
-  check("Telegram 恢復後，排程把兩題的通知補發出去", kNotices() === 2, `通知數=${kNotices()}`);
+  for (let i = 0; i < 20 && kNotices().length < 1; i++) await new Promise((r) => setTimeout(r, 500));
+  check("Telegram 恢復後，排程補發一則完整通知（含兩則訊息）", kNotices().length === 1 && kNotices()[0].includes("look after") && !kNotices()[0].includes("補充"),
+    `通知=${kNotices().join(" || ").slice(0, 200)}`);
   await fetch(`${WORKER}/__scheduled?cron=${encodeURIComponent("*/5 * * * *")}`);
   await new Promise((r) => setTimeout(r, 2000));
-  check("已補發的題目，下一次排程不會重複通知", kNotices() === 2, `通知數=${kNotices()}`);
+  check("已補發的題目，下一次排程不會重複通知", kNotices().length === 1, `通知數=${kNotices().length}`);
+
+  // 10.9 學生分兩次問：併入同一題、只多一則靜音補充通知；老師開著舊頁面送出會被擋下，修改內容保留
+  const mName = `R${RUN}-M`;
+  await sendWebhook(uid("M"), "take after 是什麼意思");
+  const qm = await findQuestionId(tutor, "M");
+  for (let i = 0; i < 20 && !telegramTexts.some((t) => t.includes(mName)); i++) await new Promise((r) => setTimeout(r, 500));
+  const mOld = await http(`/review/${qm}`, { cookie: tutor });
+  const oldVersion = mOld.text.match(/name="draft_version" value="(\d+)"/)?.[1];
+  const oldSeen = mOld.text.match(/name="seen_count" value="(\d+)"/)?.[1];
+  check("審核頁帶有草稿版本與已看過的訊息數", oldVersion === "1" && oldSeen === "1", `version=${oldVersion} seen=${oldSeen}`);
+  await sendWebhook(uid("M"), "那 look after 呢");
+  for (let i = 0; i < 30 && !telegramSilent.some((t) => t.includes(`補充｜${mName}`)); i++) await new Promise((r) => setTimeout(r, 500));
+  const mAll = telegramTexts.filter((t) => t.includes(mName));
+  check("第二則併入同一題，Telegram 只多一則靜音的補充通知", (await countQuestions("M")) === 1 && mAll.length === 2 && telegramSilent.some((t) => t.includes(`補充｜${mName}`) && t.includes("那 look after 呢")),
+    `題數=${await countQuestions("M")} 通知=${mAll.join(" || ").slice(0, 300)}`);
+  const blocked = await http(`/review/${qm}/approve`, { method: "POST", cookie: tutor, form: { final_answer: "老師改的版本XYZ", draft_version: oldVersion, seen_count: oldSeen } });
+  const addedList = blocked.text.match(/<ul class="added">([\s\S]*?)<\/ul>/)?.[1] ?? "";
+  check("開著舊頁面送出 → 擋下、老師的修改保留、列出學生補傳的內容",
+    blocked.status === 200 && blocked.text.includes("學生補傳了內容") && /<textarea[^>]*data-preserved[^>]*>老師改的版本XYZ<\/textarea>/.test(blocked.text) && addedList.includes("那 look after 呢") && !addedList.includes("take after"),
+    `status=${blocked.status} added=${addedList.replace(/\s+/g, " ").slice(0, 200)}`);
+  const newVersion = blocked.text.match(/name="draft_version" value="(\d+)"/)?.[1];
+  const approvedAgain = await http(`/review/${qm}/approve`, { method: "POST", cookie: tutor, form: { final_answer: "老師改的版本XYZ＋look after", draft_version: newVersion, seen_count: "2" } });
+  check("確認補充內容後再送出 → 通過", newVersion === "2" && approvedAgain.location === `/review/${qm}?m=waiting`, `version=${newVersion} location=${approvedAgain.location}`);
+  await sendWebhook(uid("M"), "那 look up 呢");
+  let mCount = 0;
+  for (let i = 0; i < 30 && (mCount = await countQuestions("M")) < 2; i++) await new Promise((r) => setTimeout(r, 1000));
+  check("已有老師按過通過的題目不再併入，新訊息另開一題", mCount === 2, `題數=${mCount}`);
 
   // 11. PIN 錯太多次 → 鎖定
   for (let i = 0; i < 5; i++) await http("/login", { method: "POST", form: { pin: "999999", next: "/queue" } });

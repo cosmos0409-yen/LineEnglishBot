@@ -241,10 +241,12 @@ export interface ReviewPageData {
   flashCode: string | null;
   highlightGenerate: boolean;
   csrf: string;
+  /** 老師送出時草稿已經更新（學生補傳內容）而被擋下：保留老師的內容，並標出看過之後學生補傳的訊息 */
+  blocked?: { answer: string; seenCount: number };
   now?: number;
 }
 
-export function reviewPage({ role, q, context, flashCode, highlightGenerate, csrf, now = Date.now() }: ReviewPageData): string {
+export function reviewPage({ role, q, context, flashCode, highlightGenerate, csrf, blocked, now = Date.now() }: ReviewPageData): string {
   const imageCount = (JSON.parse(q.image_ids) as string[]).length;
   const photos = Array.from({ length: imageCount }, (_, i) => html`
     <a href="/img/${q.id}/${i}" target="_blank" rel="noopener"><img src="/img/${q.id}/${i}" alt="學生傳的照片 ${i + 1}"></a>`);
@@ -290,6 +292,27 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
 
   const note = q.tutor_note && q.tutor_note !== "無" ? html`<div class="card note"><b>${icon("info")}AI 給老師的提醒</b><p>${q.tutor_note}</p></div>` : "";
 
+  // 這一題自己的學生訊息（學生分幾次傳、併入同一題時會有好幾則）
+  const own = context.filter((m) => m.question_id === q.id && m.role === "student");
+  const imageIds = JSON.parse(q.image_ids) as string[];
+  const describe = (m: ContextMessage) => {
+    if (m.type !== "image") return m.text ?? `［${m.type}］`;
+    const n = m.image_id ? imageIds.indexOf(m.image_id) : -1;
+    return n >= 0 ? `照片（上方第 ${n + 1} 張）` : "照片";
+  };
+  const added = blocked ? own.slice(blocked.seenCount) : [];
+  const blockedCard = blocked
+    ? html`<section class="card highlight" role="alert">
+        <h2>${icon("alert")}學生補傳了內容，草稿已更新，這次還沒送出</h2>
+        <p>你剛才修改的內容還在下方編輯框裡，一個字都沒少。請把補充的部分加進去，再按一次通過。</p>
+        ${added.length
+          ? html`<p><b>學生補傳的內容</b></p><ul class="added">${added.map((m) => html`<li><span class="muted">${formatTaipei(m.ts)}</span> ${describe(m)}</li>`)}</ul>`
+          : ""}
+        <details open><summary>新版 AI 草稿（可參考或複製）</summary><pre class="final">${q.ai_answer ?? "（這次沒有產生草稿）"}</pre></details>
+        <p class="hint">要整份改用新草稿，可以按編輯框下方的「還原 AI 原稿」</p>
+      </section>`
+    : "";
+
   let action: SafeHtml;
   if (q.status === "sent") {
     action = html`<section class="card success">
@@ -313,7 +336,10 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
     const otherLabel = ROLE_LABEL[role === "cheng_jie" ? "tutor" : "cheng_jie"];
     action = html`<form method="post" action="/review/${q.id}/approve" class="card answer">${csrfField(csrf)}
       <label for="final">要送給學生的解答</label>
-      <textarea id="final" name="final_answer" data-ai="${q.ai_answer ?? ""}" required>${q.final_answer ?? ""}</textarea>
+      <input type="hidden" name="draft_version" value="${q.draft_version}">
+      <input type="hidden" name="seen_count" value="${own.length}">
+      <textarea id="final" name="final_answer" data-ai="${q.ai_answer ?? ""}" data-key="draft:${q.id}" data-version="${q.draft_version}"${blocked ? raw(" data-preserved") : ""} required>${blocked ? blocked.answer : (q.final_answer ?? "")}</textarea>
+      <p class="hint" data-restored hidden></p>
       <div class="row">
         ${q.ai_answer ? html`<button type="button" class="link" data-restore>${icon("undo")}還原 AI 原稿</button>` : html`<span></span>`}
         <span class="muted" data-counter></span>
@@ -335,10 +361,12 @@ export function reviewPage({ role, q, context, flashCode, highlightGenerate, csr
     <div class="meta">${kindBadge(q)} ${statusBadge(q)} <a class="student-link" href="/students/${q.student_line_id}"><b>${nameOf(q)}</b></a> ${classBadge(q.student_class)}
       <span class="muted">${formatTaipei(q.created_at)}（${timeAgo(q.created_at, now)}）</span></div>
     <p class="qtext">${q.question_text ?? "（學生只傳了照片，沒有附文字）"}</p>
+    ${q.merge_count > 0 ? html`<p class="hint">${icon("link")}學生分 ${q.merge_count + 1} 次傳，已合併成這一題，草稿是看過全部內容後寫的</p>` : ""}
     ${imageCount ? html`<div class="photos">${photos}</div><p class="hint">點照片可以開新分頁放大</p>` : ""}
     ${ctxPhoto}
   </section>
   ${history}
+  ${blockedCard}
   ${generateForm}
   ${note}
   ${action}`;

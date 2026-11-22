@@ -44,13 +44,15 @@ async function callApi(env: Env, method: string, init: RequestInit): Promise<voi
   }
 }
 
-export async function sendMessage(env: Env, html: string, buttons: UrlButton[] = []): Promise<void> {
+export async function sendMessage(env: Env, html: string, buttons: UrlButton[] = [], silent = false): Promise<void> {
   const body: Record<string, unknown> = {
     chat_id: env.TELEGRAM_CHAT_ID,
     text: html.slice(0, TEXT_LIMIT),
     parse_mode: "HTML",
     link_preview_options: { is_disabled: true },
   };
+  // 靜音：群組成員仍看得到訊息，但手機通知不發出聲音
+  if (silent) body.disable_notification = true;
   if (buttons.length > 0) body.reply_markup = { inline_keyboard: [buttons.map((b) => ({ text: b.text, url: b.url }))] };
   await callApi(env, "sendMessage", {
     method: "POST",
@@ -82,6 +84,7 @@ function reviewUrl(env: Env, q: QuestionRow, generate = false): string {
 
 /**
  * 依提問狀態發通知：
+ * - 學生補傳內容、已併入這一題（notify_kind = update）：靜音一行，寫出補傳了什麼
  * - AI 失敗：警告，請老師直接處理
  * - 非英文問題：精簡通知 +「產生解答」按鈕
  * - 題目／需要補資訊：照片（若有）＋ AI 草稿 + 給老師的備註 +「前往審核」按鈕
@@ -90,6 +93,19 @@ export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredIma
   const name = escapeHtml(studentName);
   const questionLine = q.question_text ? `問題：${escapeHtml(q.question_text)}` : "問題：（只傳了照片）";
   const photoCaption = (i: number) => `${studentName} 的照片（${i + 1}/${images.length}）`;
+
+  if (q.notify_kind === "update") {
+    const status =
+      q.ai_status === "error"
+        ? `AI 重寫草稿失敗：${escapeHtml((q.ai_error ?? "原因不明").split("｜")[0])}，請到審核頁重新產生`
+        : q.kind === "non_question"
+          ? "AI 仍判斷不是英文問題"
+          : "草稿已更新";
+    await sendMessage(env, `<b>補充｜${name}</b>　${escapeHtml(q.notify_note ?? "補傳了內容")}\n<i>${status}</i>`, [{ text: "前往審核", url: reviewUrl(env, q) }], true);
+    return;
+  }
+  // 原本是非英文訊息或 AI 失敗、學生補充後才有草稿：照新提問的格式完整通知，標註是補充後的
+  const upgraded = q.notify_kind === "upgrade" ? "（學生補充後）" : "";
 
   if (q.ai_status === "error") {
     for (const [i, img] of images.entries()) await sendPhoto(env, img, photoCaption(i));
@@ -114,7 +130,7 @@ export async function notifyQuestion(env: Env, q: QuestionRow, images: StoredIma
   const label = q.kind === "need_more_info" ? "（需要學生補資訊）" : "";
   const contextLine = q.context_image_id ? "\n<i>AI 有參考學生前面傳的照片</i>" : "";
   const note = q.tutor_note && q.tutor_note !== "無" ? `\n\n<b>給老師</b>：${escapeHtml(q.tutor_note)}` : "";
-  const header = `<b>新提問｜${name}</b>\n${questionLine}${contextLine}\n──────────\n<b>AI 草稿</b>${label}\n`;
+  const header = `<b>新提問${upgraded}｜${name}</b>\n${questionLine}${contextLine}\n──────────\n<b>AI 草稿</b>${label}\n`;
   const button = [{ text: "前往審核", url: reviewUrl(env, q) }];
 
   const chunks = splitText(q.ai_answer ?? "", CHUNK_SIZE);

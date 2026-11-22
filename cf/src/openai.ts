@@ -49,6 +49,8 @@ export interface DraftInput {
   contextImage?: InlineImage | null;
   /** 老師在審核頁按「產生 AI 草稿」：不允許判成 non_question */
   forceAnswer?: boolean;
+  /** 學生分幾次傳、已併成同一題的訊息 */
+  merged?: boolean;
 }
 
 // 老師強制產生草稿時，kind 的選項拿掉 non_question：不只靠 Prompt，用 schema 保證一定會寫草稿
@@ -77,7 +79,15 @@ const imagePart = (img: InlineImage) => ({
 });
 
 function buildUserContent(input: DraftInput) {
-  const content: unknown[] = input.images.map(imagePart);
+  const content: unknown[] = [];
+  if (input.merged) {
+    content.push({ type: "text", text: "（學生分幾次傳了下面的照片與文字，請當成同一個提問一起回答；文字依傳送時間排列）" });
+  }
+  // 多張照片時標上順序：學生說的題號可能分別在不同照片上
+  for (const [i, img] of input.images.entries()) {
+    if (input.images.length > 1) content.push({ type: "text", text: `（照片 ${i + 1}／${input.images.length}，依學生傳送順序）` });
+    content.push(imagePart(img));
+  }
   if (input.contextImage) {
     content.push({ type: "text", text: "（下面這張是學生前面傳過的照片，這次沒有重新傳）" });
     content.push(imagePart(input.contextImage));

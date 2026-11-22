@@ -1,6 +1,6 @@
 # 交接手冊 — LINE 英文解題助手（Cloudflare 改寫）
 
-> 最後更新：2026-11-21　目前階段：**Phase 5 正式營運中（業主正式 LINE 帳號＋正式導師群組）；11/21 修正 Telegram 通知失敗會卡住、吞訊息的問題**
+> 最後更新：2026-11-22　目前階段：**Phase 5 正式營運中；11/22 學生分幾次傳的訊息併入同一題、審核頁送出前檢查草稿版本**
 > 完整計畫與決策：[cloudflare-migration-plan.md](cloudflare-migration-plan.md)　Prompt：[prompt-v2.md](prompt-v2.md)
 > 根目錄的 `交接手冊.md`、`Phase1_交接手冊.md` 是 Python 舊版的文件，Phase 7 會合併後移除
 
@@ -48,6 +48,21 @@
   - 每 5 分鐘 cron（`*/5 * * * *`）呼叫 DO 的 `retryNotify` 補發 2 天內還沒通知成功的題目；每日清理排程用 `DAILY_CRON` 區分
   - `telegram.ts`：429 照 `retry_after` 等待後重送（≤30 秒、最多 2 次），等更久的交給排程
   - 測試：單元 57 項全過（新增補發租約、補發清單、429 重送）；端對端新增「Telegram 故障」4 項全過
+
+- **2026-11-22 分次傳訊息併入同一題**（version `d14681b0`，遠端已套用 `0007_merge.sql`）：
+  - 起因：學生 HAO 傳照片後隔 43 秒才打說明（超過 30 秒緩衝），被拆成兩題：只有照片那題 AI 延續 20 分鐘前的舊話題答錯；
+    有說明那題只看得到第二張照片，漏答第一張的 6、8 題
+  - 併入規則（`db.ts` 的 `findMergeTarget`）：必須是該學生**最新一題**、`pending`、兩位老師都還沒按通過、和該題最後一則學生訊息相隔 ≤ 10 分鐘（`MERGE_WINDOW_MS`）
+  - `buffer.ts`：`mergeBatch` 用這一題全部的照片（最多 4 張）與文字重寫草稿；`mergeIntoQuestion` 在同一個交易內更新並連結訊息，
+    只在 `draft_version` 沒變、仍沒人通過時成功，否則改成另開一題。AI 失敗時保留原草稿只記錯誤。alarm 重跑以 `getQuestionByEvent` 判斷已處理
+  - 只有照片、還沒打字時緩衝延長為 3 倍（`text.ts` 的 `bufferDelaySeconds`，正式環境 90 秒）
+  - 通知（`notify_kind`）：`new` 新提問；`update` 一行靜音（`disable_notification`）寫出補傳了什麼，不重發照片；
+    `upgrade`（原本非英文或 AI 失敗、補充後才有草稿）照新提問格式完整通知並標「學生補充後」
+  - 審核頁：表單帶 `draft_version`、`seen_count`；版本不符時 `approve` 回 `draft_updated`，路由重新顯示頁面，保留老師內容、列出學生補傳的訊息與新版草稿。
+    老師按「產生 AI 草稿」也會讓版本 +1。編輯框自動暫存在瀏覽器 localStorage（7 天），還原時若版本已變，送出會被擋下確認
+  - Prompt 加「七、照片、前文與夾雜的訊息」（只有照片不延續舊話題、多張照片逐張對照、夾雜非英文事項寫進 tutor_note）；多張照片標上傳送順序
+  - 每週健康檢查（Claude 排程任務 `line-tutor-weekly-health`，週六 21:00，唯讀，需使用者環境變數 `CF_READONLY_TOKEN`）加「草稿被大改的比例」
+  - 測試：單元 70 項全過；端對端 67 項中 58 項通過，未過的 9 項都需要真實 AI（本機金鑰失效）；新增的併題、擋下送出、另開新題 7 項全過；內建瀏覽器實測自動暫存與擋下頁面
 
 ## 2. 當前狀態（Current State）
 
@@ -97,6 +112,10 @@ Python 舊版：程式仍在 repo，沒有部署。LINE Webhook 仍指向已停�
 - ℹ️ 內建瀏覽器送表單時 Origin 是 `null`，所以 CSRF 改用 token；`Referrer-Policy` 用 `same-origin`（`no-referrer` 也會讓 Origin 變 null）
 - ℹ️ bot（@AiTeacher0223bot）開著隱私模式：查群組 ID 時要在群組傳 `/start@AiTeacher0223bot`
 - ⚠️ Telegram 通知發到一半失敗（例如照片已送、文字失敗）時，補發會整組重發，可能重複收到照片（不影響資料正確性）
+- ⚠️ 併入同一題的限制：學生 10 分鐘內接著問不相關的問題也會併入（由老師一次回覆）；照片超過 4 張時多的不給 AI 看（補充通知會註明）；
+  每次併入都重呼叫一次 AI（成本略增）；併入過的題目 `notified_at` 是最後一則補充通知的時間
+- ℹ️ 待使用者處理：建立唯讀 Cloudflare API Token（D1 Read＋Account Analytics Read），存成使用者環境變數 `CF_READONLY_TOKEN` 並重開 Claude，每週健康檢查才讀得到雲端資料；
+  也請業主在 LINE 歡迎訊息加「傳照片時請一起說明要問第幾題」
 - ⚠️ 長草稿每段 3000 字再做 HTML 跳脫，大量 `&`、`<` 時可能超過 Telegram 4096 字上限而被截斷、格式錯誤（400）；目前沒發生過，`notify_error` 會記下
 - ✅ 已修（11/21）：Telegram 最後一次重試仍失敗時整批卡在 pending、吞掉之後訊息的問題；改為每 5 分鐘排程補發 2 天內的題目
 - ℹ️ 查通知失敗原因：`SELECT id, notify_attempts, notify_error FROM questions WHERE notify_error IS NOT NULL`（成功後會清空 `notify_error`）

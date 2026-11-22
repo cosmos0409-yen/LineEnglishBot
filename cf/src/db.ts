@@ -21,6 +21,10 @@ export interface QuestionRow {
   notify_attempts: number;
   notify_attempt_at: number | null;
   notify_error: string | null;
+  draft_version: number;
+  merge_count: number;
+  notify_kind: "new" | "update" | "upgrade";
+  notify_note: string | null;
   created_at: number;
 }
 
@@ -69,6 +73,101 @@ export async function getHistory(env: Env, studentLineId: string, beforeTs: numb
 
 export async function getQuestionByBatch(env: Env, batchId: string): Promise<QuestionRow | null> {
   return env.DB.prepare("SELECT * FROM questions WHERE batch_id = ?").bind(batchId).first<QuestionRow>();
+}
+
+/** 這一批已經處理過（建立新題或併入某題）時，回傳那一題；用第一則訊息的連結判斷，alarm 重跑時不會重複處理。 */
+export async function getQuestionByEvent(env: Env, eventId: string): Promise<QuestionRow | null> {
+  return env.DB.prepare("SELECT q.* FROM messages m JOIN questions q ON q.id = m.question_id WHERE m.event_id = ?").bind(eventId).first<QuestionRow>();
+}
+
+// 老師還沒處理、和學生上一則訊息相隔在這個時間內，新訊息就併入同一題
+export const MERGE_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * 找可以併入的題目：必須是這位學生「最新的一題」，還在等待審核、沒有任何老師按過通過，
+ * 而且這一批的第一則訊息和那一題最後一則學生訊息相隔不超過 10 分鐘。
+ */
+export async function findMergeTarget(env: Env, studentLineId: string, batchFirstTs: number): Promise<QuestionRow | null> {
+  const latest = await env.DB.prepare("SELECT * FROM questions WHERE student_line_id = ? ORDER BY created_at DESC LIMIT 1")
+    .bind(studentLineId)
+    .first<QuestionRow & { approver_cheng_jie: number; approver_tutor: number }>();
+  if (!latest || latest.status !== "pending" || latest.approver_cheng_jie || latest.approver_tutor) return null;
+  const last = await env.DB.prepare("SELECT MAX(ts) AS ts FROM messages WHERE question_id = ? AND role = 'student'")
+    .bind(latest.id)
+    .first<{ ts: number | null }>();
+  const lastTs = last?.ts ?? latest.created_at;
+  return batchFirstTs - lastTs <= MERGE_WINDOW_MS ? latest : null;
+}
+
+/** 這一題所有學生訊息（由舊到新），併入後重寫草稿時用。 */
+export async function getQuestionMessages(env: Env, questionId: string): Promise<{ type: string; text: string | null; image_id: string | null; ts: number }[]> {
+  const { results } = await env.DB.prepare("SELECT type, text, image_id, ts FROM messages WHERE question_id = ? AND role = 'student' ORDER BY ts")
+    .bind(questionId)
+    .run<{ type: string; text: string | null; image_id: string | null; ts: number }>();
+  return results;
+}
+
+export interface MergeUpdate {
+  questionText: string | null;
+  imageIds: string[];
+  contextImageId: string | null;
+  result: DraftResult | null; // null = AI 失敗：保留原本的草稿，只記錄錯誤
+  aiError: string | null;
+  notifyKind: QuestionRow["notify_kind"];
+  notifyNote: string | null;
+  eventIds: string[];
+  now: number;
+}
+
+/**
+ * 把一批訊息併入既有題目並寫回新草稿（同一個交易）。
+ * 只有草稿版本沒變、還在等待審核、沒有老師按過通過時才會成功；否則回傳 null，由呼叫端改成建立新題。
+ * 併入前還沒有老師處理，所以 final_answer 一定還是 AI 原稿，直接換成新草稿。
+ */
+export async function mergeIntoQuestion(env: Env, target: QuestionRow, m: MergeUpdate): Promise<QuestionRow | null> {
+  const d = m.result?.draft ?? null;
+  const update = d
+    ? env.DB.prepare(
+        `UPDATE questions
+            SET question_text = ?, image_ids = ?, context_image_id = ?,
+                kind = ?, ai_status = 'ok', ai_error = NULL, ai_answer = ?, tutor_note = ?, confidence = ?, ai_meta = ?, final_answer = ?,
+                draft_version = draft_version + 1, merge_count = merge_count + 1,
+                notified_at = NULL, notify_attempts = 0, notify_attempt_at = NULL, notify_error = NULL, notify_kind = ?, notify_note = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending' AND approver_cheng_jie = 0 AND approver_tutor = 0 AND draft_version = ?
+          RETURNING id`,
+      ).bind(
+        m.questionText,
+        JSON.stringify(m.imageIds),
+        m.contextImageId,
+        d.kind,
+        d.answer,
+        d.tutor_note,
+        d.confidence,
+        JSON.stringify(m.result!.meta),
+        d.answer,
+        m.notifyKind,
+        m.notifyNote,
+        m.now,
+        target.id,
+        target.draft_version,
+      )
+    : env.DB.prepare(
+        `UPDATE questions
+            SET question_text = ?, image_ids = ?, context_image_id = ?, ai_status = 'error', ai_error = ?,
+                draft_version = draft_version + 1, merge_count = merge_count + 1,
+                notified_at = NULL, notify_attempts = 0, notify_attempt_at = NULL, notify_error = NULL, notify_kind = ?, notify_note = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending' AND approver_cheng_jie = 0 AND approver_tutor = 0 AND draft_version = ?
+          RETURNING id`,
+      ).bind(m.questionText, JSON.stringify(m.imageIds), m.contextImageId, m.aiError, m.notifyKind, m.notifyNote, m.now, target.id, target.draft_version);
+  const placeholders = m.eventIds.map(() => "?").join(",");
+  // 連結訊息只在更新成功時生效：WHERE 再確認一次題目已是新版本
+  const link = env.DB.prepare(
+    `UPDATE messages SET question_id = ? WHERE event_id IN (${placeholders})
+       AND EXISTS (SELECT 1 FROM questions WHERE id = ? AND draft_version = ?)`,
+  ).bind(target.id, ...m.eventIds, target.id, target.draft_version + 1);
+  const [res] = await env.DB.batch([update, link]);
+  if (res.results.length === 0) return null;
+  return env.DB.prepare("SELECT * FROM questions WHERE id = ?").bind(target.id).first<QuestionRow>();
 }
 
 export interface NewQuestion {

@@ -108,13 +108,22 @@ export async function getContextMessages(env: Env, q: ReviewQuestion): Promise<C
 export type ApproveOutcome =
   | { kind: "approved"; question: ReviewQuestion } // 兩位都通過（或直接通過）→ 呼叫端負責推播
   | { kind: "waiting"; question: ReviewQuestion } // 還在等另一位
-  | { kind: "rejected"; reason: "not_found" | "already_done" | "already_approved_by_you" | "empty_answer" | "direct_not_allowed" };
+  | { kind: "rejected"; reason: "not_found" | "already_done" | "already_approved_by_you" | "empty_answer" | "direct_not_allowed" | "draft_updated" };
 
 /**
  * 原子化審核：同一個 UPDATE 同時檢查狀態與「我還沒審過」，再決定是否轉成 approved。
  * 兩位同時按也只會有一個請求拿到 approved，所以只會推播一次，也不會卡在 1/2。
+ * draftVersion：老師打開頁面時的草稿版本；之後學生補傳內容或草稿重寫過就擋下（draft_updated），避免送出缺內容的舊版。
  */
-export async function approve(env: Env, id: string, role: Role, finalAnswer: string, direct: boolean, now = Date.now()): Promise<ApproveOutcome> {
+export async function approve(
+  env: Env,
+  id: string,
+  role: Role,
+  finalAnswer: string,
+  direct: boolean,
+  draftVersion: number | null = null,
+  now = Date.now(),
+): Promise<ApproveOutcome> {
   if (!finalAnswer.trim()) return { kind: "rejected", reason: "empty_answer" };
   if (direct && role !== "cheng_jie") return { kind: "rejected", reason: "direct_not_allowed" };
 
@@ -127,10 +136,10 @@ export async function approve(env: Env, id: string, role: Role, finalAnswer: str
             direct_approved = CASE WHEN ? = 1 THEN 1 ELSE direct_approved END,
             status = CASE WHEN ${other} = 1 OR ? = 1 THEN 'approved' ELSE 'pending' END,
             updated_at = ?
-      WHERE id = ? AND status = 'pending' AND ${mine} = 0
+      WHERE id = ? AND status = 'pending' AND ${mine} = 0 AND (? IS NULL OR draft_version = ?)
       RETURNING *`,
   )
-    .bind(finalAnswer.trim(), direct ? 1 : 0, direct ? 1 : 0, now, id)
+    .bind(finalAnswer.trim(), direct ? 1 : 0, direct ? 1 : 0, now, id, draftVersion, draftVersion)
     .first<ReviewQuestion>();
 
   if (row) return row.status === "approved" ? { kind: "approved", question: row } : { kind: "waiting", question: row };
@@ -138,6 +147,7 @@ export async function approve(env: Env, id: string, role: Role, finalAnswer: str
   const current = await getQuestion(env, id);
   if (!current) return { kind: "rejected", reason: "not_found" };
   if (current.status !== "pending") return { kind: "rejected", reason: "already_done" };
+  if (draftVersion !== null && current.draft_version !== draftVersion) return { kind: "rejected", reason: "draft_updated" };
   return { kind: "rejected", reason: "already_approved_by_you" };
 }
 
@@ -201,7 +211,7 @@ export async function saveRegeneratedDraft(env: Env, id: string, result: DraftRe
     `UPDATE questions
         SET kind = ?, ai_status = 'ok', ai_error = NULL, ai_answer = ?, tutor_note = ?, confidence = ?, ai_meta = ?,
             final_answer = CASE WHEN final_answer IS NULL OR final_answer = '' OR final_answer = ai_answer THEN ? ELSE final_answer END,
-            updated_at = ?
+            draft_version = draft_version + 1, updated_at = ?
       WHERE id = ?`,
   )
     .bind(d.kind, d.answer, d.tutor_note, d.confidence, JSON.stringify(result.meta), d.answer, now, id)

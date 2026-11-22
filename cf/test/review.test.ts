@@ -4,11 +4,24 @@ import { formatTaipei, html, raw, timeAgo } from "../src/html";
 import { toTextBubbles } from "../src/line";
 import { CLASS_MAX, cleanField, NAME_MAX, studentLabel } from "../src/students";
 import { getAiConfig, isValidModelId, validateAiInput } from "../src/settings";
-import { OPEN_CONDITION } from "../src/review";
+import { approve, OPEN_CONDITION, saveRegeneratedDraft } from "../src/review";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { claimNotify, listUnnotified, markNotified, NOTIFY_GIVE_UP_MS, NOTIFY_LEASE_MS, recordNotifyError } from "../src/db";
+import {
+  claimNotify,
+  findMergeTarget,
+  getQuestionByEvent,
+  listUnnotified,
+  markNotified,
+  MERGE_WINDOW_MS,
+  mergeIntoQuestion,
+  NOTIFY_GIVE_UP_MS,
+  NOTIFY_LEASE_MS,
+  recordNotifyError,
+  type QuestionRow,
+} from "../src/db";
+import type { DraftResult } from "../src/openai";
 
 const env = (over: Partial<Record<string, string>> = {}) =>
   ({ SESSION_SECRET: "test-secret", PIN_CHENG_JIE: "111111", PIN_TUTOR: "222222", ...over }) as unknown as Env;
@@ -127,7 +140,13 @@ function sqliteD1() {
     };
     return stmt;
   };
-  return { db, env: { DB: { prepare } } as unknown as Env };
+  // D1 的 batch 是同一個交易、依序執行；測試只需要依序執行
+  const batch = async (stmts: ReturnType<typeof prepare>[]) => {
+    const out = [];
+    for (const st of stmts) out.push(await st.run());
+    return out;
+  };
+  return { db, env: { DB: { prepare, batch } } as unknown as Env };
 }
 
 describe("Telegram 通知補發（claimNotify / listUnnotified）", () => {
@@ -226,5 +245,113 @@ describe("toTextBubbles", () => {
     expect(bubbles.length).toBe(5);
     expect(bubbles.every((b) => b.text.length <= 5000)).toBe(true);
     expect(bubbles[4].text.endsWith("（內容過長，已截斷）")).toBe(true);
+  });
+});
+
+describe("學生分幾次傳的訊息併入同一題", () => {
+  const t0 = Date.UTC(2026, 10, 22, 4, 30);
+  const setup = () => {
+    const t = sqliteD1();
+    const addQ = (id: string, createdAt: number, extra: Record<string, SQLInputValue> = {}) => {
+      const row: Record<string, SQLInputValue> = {
+        id, batch_id: `b-${id}`, student_line_id: "U1", student_name: "HAO", image_ids: "[]", ai_status: "ok", kind: "question",
+        ai_answer: "舊草稿", final_answer: "舊草稿", status: "pending", notified_at: createdAt + 1000, created_at: createdAt, updated_at: createdAt, ...extra,
+      };
+      const cols = Object.keys(row);
+      t.db.prepare(`INSERT INTO questions (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...cols.map((c) => row[c]));
+    };
+    const addMsg = (eventId: string, ts: number, questionId: string | null, type = "text", text: string | null = "x") =>
+      t.db
+        .prepare("INSERT INTO messages (event_id, student_line_id, role, type, text, image_id, question_id, ts) VALUES (?, 'U1', 'student', ?, ?, ?, ?, ?)")
+        .run(eventId, type, text, type === "image" ? `img-${eventId}` : null, questionId, ts);
+    const get = (id: string) => t.db.prepare("SELECT * FROM questions WHERE id = ?").get(id) as Record<string, unknown>;
+    return { ...t, addQ, addMsg, get };
+  };
+  const draft = (answer: string, kind: "question" | "need_more_info" | "non_question" = "question") =>
+    ({ draft: { kind, answer, tutor_note: "無", confidence: "high" }, meta: { model: "m" } }) as unknown as DraftResult;
+
+  it("最新一題、等待審核、沒人按過通過、10 分鐘內才併入", async () => {
+    const { env, addQ, addMsg } = setup();
+    addQ("q1", t0);
+    addMsg("e1", t0, "q1");
+    expect((await findMergeTarget(env, "U1", t0 + 43_000))?.id).toBe("q1"); // HAO 的情況：照片後 43 秒才打字
+    expect(await findMergeTarget(env, "U1", t0 + MERGE_WINDOW_MS + 1)).toBeNull(); // 隔太久
+    expect(await findMergeTarget(env, "U2", t0 + 1000)).toBeNull(); // 別的學生
+  });
+
+  it("有老師按過通過、已送出、已標記不需回覆，或不是最新一題 → 不併入", async () => {
+    const cases: Record<string, SQLInputValue>[] = [{ approver_tutor: 1 }, { status: "sent" }, { status: "dismissed" }];
+    for (const extra of cases) {
+      const { env, addQ, addMsg } = setup();
+      addQ("q1", t0, extra);
+      addMsg("e1", t0, "q1");
+      expect(await findMergeTarget(env, "U1", t0 + 1000)).toBeNull();
+    }
+    const { env, addQ, addMsg } = setup();
+    addQ("q_old", t0 - 1000);
+    addMsg("e0", t0 - 1000, "q_old");
+    addQ("q_new", t0, { status: "sent" });
+    addMsg("e1", t0, "q_new");
+    expect(await findMergeTarget(env, "U1", t0 + 1000)).toBeNull(); // 最新的一題已送出，不會跳去併入更舊的
+  });
+
+  it("併入後：內容與草稿更新、版本 +1、訊息連到同一題、補充通知為靜音一行", async () => {
+    const { env, db, addQ, addMsg, get } = setup();
+    addQ("q1", t0, { image_ids: '["img-e1"]' });
+    addMsg("e1", t0, "q1", "image", null);
+    addMsg("e2", t0 + 43_000, null, "text", "可以幫我看一下6.跟8.嗎");
+    const target = (await findMergeTarget(env, "U1", t0 + 43_000)) as QuestionRow;
+    const merged = await mergeIntoQuestion(env, target, {
+      questionText: "可以幫我看一下6.跟8.嗎", imageIds: ["img-e1"], contextImageId: null, result: draft("6. ... 8. ..."), aiError: null,
+      notifyKind: "update", notifyNote: "「可以幫我看一下6.跟8.嗎」", eventIds: ["e2"], now: t0 + 60_000,
+    });
+    expect(merged?.draft_version).toBe(2);
+    expect(get("q1")).toMatchObject({ merge_count: 1, ai_answer: "6. ... 8. ...", final_answer: "6. ... 8. ...", notified_at: null, notify_kind: "update" });
+    expect((db.prepare("SELECT question_id FROM messages WHERE event_id = 'e2'").get() as { question_id: string }).question_id).toBe("q1");
+    expect((await getQuestionByEvent(env, "e2"))?.id).toBe("q1"); // alarm 重跑時知道這一批已處理過
+  });
+
+  it("AI 失敗時保留原本的草稿，只記錄錯誤", async () => {
+    const { env, addQ, addMsg, get } = setup();
+    addQ("q1", t0);
+    addMsg("e1", t0, "q1");
+    const target = (await findMergeTarget(env, "U1", t0 + 1000)) as QuestionRow;
+    await mergeIntoQuestion(env, target, {
+      questionText: "x\ny", imageIds: [], contextImageId: null, result: null, aiError: "OpenAI 暫時無法使用｜503",
+      notifyKind: "update", notifyNote: "「y」", eventIds: [], now: t0 + 2000,
+    });
+    expect(get("q1")).toMatchObject({ ai_status: "error", ai_answer: "舊草稿", final_answer: "舊草稿", question_text: "x\ny" });
+  });
+
+  it("AI 寫草稿期間老師按了通過 → 不併入（回傳 null），訊息不會被連過去", async () => {
+    const { env, db, addQ, addMsg, get } = setup();
+    addQ("q1", t0);
+    addMsg("e1", t0, "q1");
+    addMsg("e2", t0 + 1000, null);
+    const target = (await findMergeTarget(env, "U1", t0 + 1000)) as QuestionRow;
+    db.prepare("UPDATE questions SET approver_cheng_jie = 1 WHERE id = 'q1'").run();
+    const merged = await mergeIntoQuestion(env, target, {
+      questionText: "x", imageIds: [], contextImageId: null, result: draft("新"), aiError: null, notifyKind: "update", notifyNote: null, eventIds: ["e2"], now: t0 + 2000,
+    });
+    expect(merged).toBeNull();
+    expect(get("q1")).toMatchObject({ ai_answer: "舊草稿", draft_version: 1 });
+    expect((db.prepare("SELECT question_id FROM messages WHERE event_id = 'e2'").get() as { question_id: string | null }).question_id).toBeNull();
+  });
+
+  it("老師送出時草稿已更新 → 擋下（draft_updated）；用新版本號才能通過", async () => {
+    const { env, db, addQ } = setup();
+    addQ("q1", t0);
+    db.prepare("UPDATE questions SET draft_version = 2 WHERE id = 'q1'").run();
+    const stale = await approve(env, "q1", "tutor", "老師改的版本", false, 1);
+    expect(stale).toEqual({ kind: "rejected", reason: "draft_updated" });
+    const ok = await approve(env, "q1", "tutor", "老師改的版本", false, 2);
+    expect(ok.kind).toBe("waiting");
+  });
+
+  it("老師按「產生 AI 草稿」也會讓版本 +1（另一位老師開著的舊頁面送出會被擋下）", async () => {
+    const { env, addQ, get } = setup();
+    addQ("q1", t0);
+    await saveRegeneratedDraft(env, "q1", draft("重寫"));
+    expect(get("q1")).toMatchObject({ draft_version: 2, ai_answer: "重寫" });
   });
 });

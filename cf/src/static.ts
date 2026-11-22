@@ -47,6 +47,7 @@ button{font:inherit;cursor:pointer}
 .link{border:0;background:none;color:var(--primary);padding:0;font-weight:600}
 .warn{color:var(--warn)!important}
 pre.final{white-space:pre-wrap;font:inherit;margin:8px 0}
+ul.added{margin:4px 0 8px;padding-left:20px}ul.added li{margin:2px 0;white-space:pre-wrap}
 .list{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
 .item{display:block;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:inherit;text-decoration:none}
 .item-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.item-text{margin:6px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -113,9 +114,41 @@ if (ta) {
   };
   ta.addEventListener("input", update);
   update();
+  // 自動暫存在這台裝置：重新整理、關掉分頁或手機切走後回來，修改還在（7 天後自動丟棄）
+  var key = ta.dataset.key;
+  var vInput = ta.form.querySelector("input[name=draft_version]");
+  var sInput = ta.form.querySelector("input[name=seen_count]");
+  var store = function () {
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify({ v: vInput.value, s: sInput.value, t: ta.value, at: Date.now() })); } catch (e) {}
+  };
+  if (key && vInput && sInput) {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch (e) {}
+    if (saved && (Date.now() - saved.at > 7 * 864e5 || saved.t === ta.value)) {
+      try { localStorage.removeItem(key); } catch (e) {}
+      saved = null;
+    }
+    // 伺服器已經保留老師內容的頁面（送出被擋下）不再覆蓋
+    if (saved && saved.t && !("preserved" in ta.dataset)) {
+      ta.value = saved.t;
+      var changed = saved.v !== ta.dataset.version;
+      // 草稿在那之後更新過：送出時用舊版本號，讓伺服器擋下並列出學生補傳的內容
+      if (changed) { vInput.value = saved.v; sInput.value = saved.s; }
+      var note = document.querySelector("[data-restored]");
+      if (note) {
+        note.hidden = false;
+        note.textContent = changed
+          ? "已還原你上次沒送出的修改。之後學生補傳了內容、草稿也更新了，送出時會請你確認補傳的部分"
+          : "已還原你上次沒送出的修改";
+      }
+    }
+    ta.addEventListener("input", store);
+  }
+  update();
   var restore = document.querySelector("[data-restore]");
   if (restore) restore.addEventListener("click", function () {
-    if (confirm("還原成 AI 原稿？你目前的修改會被取代。")) { ta.value = ta.dataset.ai; update(); }
+    if (confirm("還原成 AI 原稿？你目前的修改會被取代。")) { ta.value = ta.dataset.ai; update(); store(); }
   });
 }
 `;

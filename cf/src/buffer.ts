@@ -1,5 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
-import { claimNotify, createQuestion, getHistory, getQuestionByBatch, markNotified, recordNotifyError, recordStudentMessages, type QuestionRow } from "./db";
+import {
+  claimNotify,
+  createQuestion,
+  findMergeTarget,
+  getHistory,
+  getQuestionByBatch,
+  getQuestionByEvent,
+  getQuestionMessages,
+  markNotified,
+  mergeIntoQuestion,
+  recordNotifyError,
+  recordStudentMessages,
+  type QuestionRow,
+} from "./db";
 import { loadImage, saveImage, type StoredImage } from "./images";
 import { downloadContent, getDisplayName } from "./line";
 import { AI_ERROR_REASON, AiError, generateDraft, type AiErrorKind, type DraftInput, type DraftResult, type HistoryTurn } from "./openai";
@@ -7,7 +20,7 @@ import { claimFallbackWarning, type AiConfigInput } from "./settings";
 import { getQuestion, saveRegeneratedDraft } from "./review";
 import { getStudent, studentLabel, upsertStudent } from "./students";
 import { notifyModelFallback, notifyQuestion } from "./telegram";
-import { bytesToBase64, isSocialOnly } from "./text";
+import { bufferDelaySeconds, bytesToBase64, isSocialOnly, truncate } from "./text";
 
 /** webhook 事件中處理需要的欄位（存進 DO 的 SQLite）。 */
 export interface BufferedMessage {
@@ -44,8 +57,9 @@ const HISTORY_LIMIT = 8;
  * 每位學生一個實例（以 LINE userId 命名）。
  * enqueue：存訊息並把 alarm 重設為 N 秒後 → 同一學生連續傳的訊息合併成一批。
  * alarm：只處理「當下快照」的訊息，成功後才刪除；處理中途新進來的訊息留給下一個 alarm。
+ * 上一題老師還沒處理、和上一則訊息相隔 10 分鐘內 → 併入同一題並重寫草稿（只發一行靜音的補充通知）。
  * alarm 丟出例外時 Cloudflare 會自動重試（最多 6 次），訊息不會遺失。
- * 每一步都可重跑：訊息以 event_id 去重、提問以 batch_id 去重、已通知的不重發。
+ * 每一步都可重跑：訊息以 event_id 去重、已連到題目的批次不重複處理、已通知的不重發。
  */
 export class StudentBuffer extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -62,7 +76,9 @@ export class StudentBuffer extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('user_id', ?)`, userId);
     // LINE 重送同一事件時 event_id 相同，忽略重複
     this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO pending (event_id, body) VALUES (?, ?)`, msg.webhookEventId, JSON.stringify(msg));
-    const seconds = Number(this.env.BUFFER_SECONDS) || 30;
+    // 只有照片、還沒打字時多等一下：學生常常傳完照片才開始打說明
+    const types = this.ctx.storage.sql.exec<{ body: string }>(`SELECT body FROM pending`).toArray().map((r) => (JSON.parse(r.body) as BufferedMessage).type);
+    const seconds = bufferDelaySeconds(types, Number(this.env.BUFFER_SECONDS) || 30);
     await this.ctx.storage.setAlarm(Date.now() + seconds * 1000);
   }
 
@@ -105,7 +121,8 @@ export class StudentBuffer extends DurableObject<Env> {
     const log = (event: string, extra: Record<string, unknown> = {}) =>
       console.log(JSON.stringify({ event, questionId: question.id, attempt: question.notify_attempts + 1, ...extra }));
     try {
-      if (images.length === 0) images = await this.loadQuestionImages(question);
+      // 補充通知只有一行文字，不重發照片
+      if (images.length === 0 && question.notify_kind !== "update") images = await this.loadQuestionImages(question);
       // 通知用老師設定的備註名稱（沒設定就用 LINE 暱稱）
       const student = await getStudent(this.env, question.student_line_id);
       await notifyQuestion(this.env, question, images, student ? studentLabel(student) : question.student_name);
@@ -154,71 +171,147 @@ export class StudentBuffer extends DurableObject<Env> {
       return null;
     }
 
-    let question = await getQuestionByBatch(this.env, batchId);
-    let images: StoredImage[] = [];
+    // 已處理過（alarm 重跑）：直接回傳那一題，不重複呼叫 AI
+    const done = (await getQuestionByEvent(this.env, batchId)) ?? (await getQuestionByBatch(this.env, batchId));
+    if (done) return { question: done, images: [] };
 
-    if (!question) {
-      images = await this.fetchAndStoreImages(userId, imageIds.slice(0, MAX_IMAGES), retryCount);
-      const history = await getHistory(this.env, userId, firstTs, HISTORY_WINDOW_MS, HISTORY_LIMIT);
-      const contextImageId = images.length === 0 ? [...history].reverse().find((h) => h.imageId)?.imageId ?? null : null;
-      const contextImage = contextImageId ? await loadImage(this.env, contextImageId) : null;
+    // 上一題老師還沒處理、10 分鐘內 → 併入同一題（學生常常先傳照片、隔一下才打字說明）
+    const target = await findMergeTarget(this.env, userId, firstTs);
+    if (target) {
+      const merged = await this.mergeBatch(target, userId, messages, retryCount, log);
+      if (merged) return merged;
+      // AI 寫草稿的期間老師剛好按了通過或重寫草稿：改成另開一題
+      log("merge_skipped_target_changed", { questionId: target.id });
+    }
 
-      const turns: HistoryTurn[] = history.map((h) => ({
-        role: h.role,
-        text: h.text,
-        hadImage: Boolean(h.imageId),
-        minutesAgo: Math.max(1, Math.round((firstTs - h.ts) / 60000)),
-      }));
+    const images = await this.fetchAndStoreImages(userId, imageIds.slice(0, MAX_IMAGES), retryCount);
+    const { input, contextImageId, historyCount } = await this.buildDraftInput(userId, firstTs, text, images);
+    log("batch_processing", { text, imageCount: images.length, historyCount, contextImage: Boolean(contextImageId) });
+    const { result, aiError } = await this.draft(input, retryCount, log);
 
-      log("batch_processing", {
-        text,
-        imageCount: images.length,
-        historyCount: turns.length,
-        contextImage: Boolean(contextImage),
-      });
+    const lineName = await getDisplayName(this.env, userId);
+    await upsertStudent(this.env, userId, lineName);
+    const question = await createQuestion(this.env, {
+      batchId,
+      studentLineId: userId,
+      studentName: lineName,
+      questionText: text,
+      imageIds: imageIds.slice(0, MAX_IMAGES),
+      contextImageId,
+      result,
+      aiError,
+      eventIds: messages.map((m) => m.webhookEventId),
+      now: Date.now(),
+    });
+    log("question_saved", { questionId: question.id, kind: question.kind, aiStatus: question.ai_status, ...(result?.meta ?? {}) });
+    return { question, images };
+  }
 
-      let result: DraftResult | null = null;
-      let aiError: string | null = null;
-      try {
-        result = await generateDraft(this.env, {
-          text,
-          images: images.map((img) => ({ base64: bytesToBase64(img.bytes), contentType: img.contentType })),
-          history: turns,
-          contextImage: contextImage ? { base64: bytesToBase64(contextImage.bytes), contentType: contextImage.contentType } : null,
-        });
-      } catch (err) {
-        // 金鑰失效、額度用完、模型設定錯：重試也不會好 → 直接存成「AI 失敗」並通知老師（寫明原因）
-        // 其他（OpenAI 暫時故障、網路問題）：交給 alarm 重試，最後一次仍失敗才通知
-        const retryable = !(err instanceof AiError) || err.retryable;
-        if (retryable && retryCount < LAST_RETRY) throw err;
-        aiError = (err instanceof AiError ? err.message : `${AI_ERROR_REASON.unknown}｜${String(err)}`).slice(0, 500);
-        log("ai_failed", { kind: err instanceof AiError ? err.kind : "unknown", retryable, aiError });
-      }
+  /**
+   * 把這一批併入老師還沒處理的上一題：用這一題「全部」的照片與文字重寫草稿，並決定下一則通知的格式。
+   * 題目在 AI 寫草稿期間被老師處理了就回傳 null。
+   */
+  private async mergeBatch(
+    target: QuestionRow,
+    userId: string,
+    messages: BufferedMessage[],
+    retryCount: number,
+    log: (event: string, extra?: Record<string, unknown>) => void,
+  ): Promise<{ question: QuestionRow; images: StoredImage[] } | null> {
+    const earlier = await getQuestionMessages(this.env, target.id);
+    const all = [
+      ...earlier.map((m) => ({ type: m.type, text: m.text, imageId: m.image_id, ts: m.ts })),
+      ...messages.map((m) => ({ type: m.type, text: m.text, imageId: m.type === "image" ? m.messageId : null, ts: m.timestamp })),
+    ].sort((a, b) => a.ts - b.ts);
+    const allText = all.filter((m) => m.type === "text" && m.text).map((m) => m.text as string).join("\n") || null;
+    const allImageIds = all.filter((m) => m.type === "image" && m.imageId).map((m) => m.imageId as string);
+    const imageIds = allImageIds.slice(0, MAX_IMAGES);
 
-      const lineName = await getDisplayName(this.env, userId);
-      await upsertStudent(this.env, userId, lineName);
-      question = await createQuestion(this.env, {
-        batchId,
-        studentLineId: userId,
-        studentName: lineName,
-        questionText: text,
-        imageIds: imageIds.slice(0, MAX_IMAGES),
-        contextImageId: contextImage ? contextImageId : null,
-        result,
-        aiError,
-        eventIds: messages.map((m) => m.webhookEventId),
-        now: Date.now(),
-      });
-      log("question_saved", { questionId: question.id, kind: question.kind, aiStatus: question.ai_status, ...(result?.meta ?? {}) });
+    const images = await this.fetchAndStoreImages(userId, imageIds, retryCount);
+    const { input, contextImageId, historyCount } = await this.buildDraftInput(userId, all[0].ts, allText, images);
+    log("batch_merging", { questionId: target.id, imageCount: images.length, historyCount, mergeCount: target.merge_count + 1 });
+    const { result, aiError } = await this.draft({ ...input, merged: true }, retryCount, log);
+
+    // 補充通知要寫出這次補傳了什麼
+    const addedImages = messages.filter((m) => m.type === "image").length;
+    const addedText = messages.filter((m) => m.type === "text" && m.text).map((m) => m.text as string).join(" ");
+    let note = [addedImages ? `照片 ${addedImages} 張` : "", addedText ? `「${truncate(addedText, 60)}」` : ""].filter(Boolean).join("＋");
+    if (allImageIds.length > MAX_IMAGES) note += `（照片超過 ${MAX_IMAGES} 張，多的沒有給 AI 看）`;
+
+    // 通知格式：第一則還沒發出去 → 照樣發完整的新提問；原本沒有草稿（非英文、AI 失敗）、補充後才有 → 完整通知；其他 → 靜音一行
+    let notifyKind: QuestionRow["notify_kind"];
+    if (target.notified_at === null && target.notify_kind === "new") {
+      notifyKind = "new";
+    } else {
+      const hadDraft = target.ai_status === "ok" && target.kind !== "non_question";
+      const hasDraft = result !== null && result.draft.kind !== "non_question";
+      const pendingUpgrade = target.notified_at === null && target.notify_kind === "upgrade";
+      notifyKind = (!hadDraft && hasDraft) || pendingUpgrade ? "upgrade" : "update";
+      // 上一則補充通知還沒發出去：把兩次補傳的內容合在一起
+      if (target.notified_at === null && target.notify_note) note = `${target.notify_note}；${note}`;
+    }
+
+    const question = await mergeIntoQuestion(this.env, target, {
+      questionText: allText,
+      imageIds,
+      contextImageId,
+      result,
+      aiError,
+      notifyKind,
+      notifyNote: note,
+      eventIds: messages.map((m) => m.webhookEventId),
+      now: Date.now(),
+    });
+    if (!question) return null;
+    log("question_merged", { questionId: question.id, kind: question.kind, aiStatus: question.ai_status, notifyKind, ...(result?.meta ?? {}) });
+    return { question, images };
+  }
+
+  /** 組 AI 的輸入：beforeTs 之前 60 分鐘內的前文；這次沒有照片時補上前文最近的一張。 */
+  private async buildDraftInput(userId: string, beforeTs: number, text: string | null, images: StoredImage[]) {
+    const history = await getHistory(this.env, userId, beforeTs, HISTORY_WINDOW_MS, HISTORY_LIMIT);
+    const ctxId = images.length === 0 ? ([...history].reverse().find((h) => h.imageId)?.imageId ?? null) : null;
+    const contextImage = ctxId ? await loadImage(this.env, ctxId) : null;
+    const turns: HistoryTurn[] = history.map((h) => ({
+      role: h.role,
+      text: h.text,
+      hadImage: Boolean(h.imageId),
+      minutesAgo: Math.max(1, Math.round((beforeTs - h.ts) / 60000)),
+    }));
+    const input: DraftInput = {
+      text,
+      images: images.map((img) => ({ base64: bytesToBase64(img.bytes), contentType: img.contentType })),
+      history: turns,
+      contextImage: contextImage ? { base64: bytesToBase64(contextImage.bytes), contentType: contextImage.contentType } : null,
+    };
+    return { input, contextImageId: contextImage ? ctxId : null, historyCount: turns.length };
+  }
+
+  /**
+   * 呼叫 AI。金鑰失效、額度用完、模型設定錯：重試也不會好 → 回傳 aiError（存成「AI 失敗」並通知老師，寫明原因）；
+   * 其他（OpenAI 暫時故障、網路問題）：丟出讓 alarm 重試，最後一次仍失敗才回傳 aiError。
+   */
+  private async draft(
+    input: DraftInput,
+    retryCount: number,
+    log: (event: string, extra?: Record<string, unknown>) => void,
+  ): Promise<{ result: DraftResult | null; aiError: string | null }> {
+    try {
+      const result = await generateDraft(this.env, input);
       // 設定的模型不能用、已自動改用預設模型：提醒老師1更新設定（一小時最多一次；提醒失敗不影響這一題）
-      if (result?.meta.modelFallbackFrom && (await claimFallbackWarning(this.env))) {
+      if (result.meta.modelFallbackFrom && (await claimFallbackWarning(this.env))) {
         await notifyModelFallback(this.env, result.meta.modelFallbackFrom, result.meta.model).catch((e) =>
           log("fallback_warning_failed", { error: String(e).slice(0, 200) }),
         );
       }
+      return { result, aiError: null };
+    } catch (err) {
+      const retryable = !(err instanceof AiError) || err.retryable;
+      if (retryable && retryCount < LAST_RETRY) throw err;
+      const aiError = (err instanceof AiError ? err.message : `${AI_ERROR_REASON.unknown}｜${String(err)}`).slice(0, 500);
+      log("ai_failed", { kind: err instanceof AiError ? err.kind : "unknown", retryable, aiError });
+      return { result: null, aiError };
     }
-
-    return { question, images };
   }
 
   /** 下載並存入 IMAGES_DB（已存的直接讀回）。下載失敗時，還有重試機會就丟例外，不會少了照片照樣解題。 */

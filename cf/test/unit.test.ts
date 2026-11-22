@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { verifySignature } from "../src/line";
-import { sendMessage } from "../src/telegram";
-import { AI_ERROR_REASON, classifyOpenAIError } from "../src/openai";
-import { bytesToBase64, cleanAnswer, escapeHtml, isSocialOnly, splitText } from "../src/text";
+import { notifyQuestion, sendMessage } from "../src/telegram";
+import type { QuestionRow } from "../src/db";
+import { SYSTEM_PROMPT } from "../src/prompt";
+import { AI_ERROR_REASON, buildMessages, classifyOpenAIError } from "../src/openai";
+import { bufferDelaySeconds, bytesToBase64, cleanAnswer, escapeHtml, isSocialOnly, splitText } from "../src/text";
 
 describe("verifySignature", () => {
   const secret = "dev-secret";
@@ -128,5 +130,74 @@ describe("Telegram 限流（429）", () => {
     vi.stubGlobal("fetch", async () => (n++, reply(400, { ok: false, description: "Bad Request: can't parse entities" })));
     await expect(sendMessage(env, "hi")).rejects.toThrow(/400.*parse entities/);
     expect(n).toBe(1);
+  });
+});
+
+describe("緩衝等待時間", () => {
+  it("只有照片時等 3 倍；有文字（或只有貼圖）照一般秒數", () => {
+    expect(bufferDelaySeconds(["image"], 30)).toBe(90);
+    expect(bufferDelaySeconds(["image", "sticker"], 30)).toBe(90);
+    expect(bufferDelaySeconds(["image", "text"], 30)).toBe(30);
+    expect(bufferDelaySeconds(["text"], 30)).toBe(30);
+    expect(bufferDelaySeconds(["sticker"], 30)).toBe(30);
+  });
+});
+
+describe("送給 AI 的內容", () => {
+  const img = { base64: "AAAA", contentType: "image/jpeg" };
+  const userParts = (input: Parameters<typeof buildMessages>[0]) => {
+    const msgs = buildMessages(input);
+    return (msgs[msgs.length - 1].content as { type: string; text?: string }[]).map((p) => (p.type === "text" ? p.text : "[圖]"));
+  };
+  it("多張照片標上傳送順序；併入的題目說明是分幾次傳的", () => {
+    expect(userParts({ text: "6 跟 8，還有這頁的 8", images: [img, img], merged: true })).toEqual([
+      "（學生分幾次傳了下面的照片與文字，請當成同一個提問一起回答；文字依傳送時間排列）",
+      "（照片 1／2，依學生傳送順序）",
+      "[圖]",
+      "（照片 2／2，依學生傳送順序）",
+      "[圖]",
+      "6 跟 8，還有這頁的 8",
+    ]);
+  });
+  it("只有一張照片時不加標籤（和原本一樣）", () => {
+    expect(userParts({ text: null, images: [img] })).toEqual(["[圖]", "（學生只傳了圖片，沒有附文字）"]);
+  });
+  it("Prompt 有「只有照片時不延續舊話題」與「夾雜非英文事項寫進給老師備註」的規則", () => {
+    expect(SYSTEM_PROMPT).toContain("不要延續前面已經回答過的話題");
+    expect(SYSTEM_PROMPT).toContain("學生另外提到");
+  });
+});
+
+describe("補充通知", () => {
+  const env = { TELEGRAM_API_BASE: "https://tg.test", TELEGRAM_BOT_TOKEN: "t", TELEGRAM_CHAT_ID: "-1", APP_BASE_URL: "https://app.test" } as unknown as Env;
+  afterEach(() => vi.unstubAllGlobals());
+  const capture = () => {
+    const sent: { url: string; body: Record<string, unknown> | null }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      sent.push({ url, body: typeof init.body === "string" ? JSON.parse(init.body) : null });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    return sent;
+  };
+  const q = (over: Partial<QuestionRow>) =>
+    ({ id: "q1", question_text: "6 跟 8", ai_status: "ok", kind: "question", ai_answer: "草稿", tutor_note: "無", context_image_id: null, notify_kind: "new", notify_note: null, ...over }) as QuestionRow;
+  const img = { bytes: new Uint8Array([1]), contentType: "image/jpeg" };
+
+  it("update：一則靜音文字，寫出補傳了什麼，不重發照片", async () => {
+    const sent = capture();
+    await notifyQuestion(env, q({ notify_kind: "update", notify_note: "照片 1 張＋「還有這頁的8.」" }), [img], "<HAO>");
+    expect(sent.length).toBe(1);
+    expect(sent[0].url).toMatch(/sendMessage$/);
+    expect(sent[0].body).toMatchObject({ disable_notification: true });
+    expect(String(sent[0].body?.text)).toContain("<b>補充｜&lt;HAO&gt;</b>　照片 1 張＋「還有這頁的8.」");
+    expect(String(sent[0].body?.text)).toContain("草稿已更新");
+  });
+
+  it("upgrade：照新提問格式完整通知（有聲、附照片），標註是補充後的", async () => {
+    const sent = capture();
+    await notifyQuestion(env, q({ notify_kind: "upgrade" }), [img], "HAO");
+    expect(sent.map((s) => s.url.split("/").pop())).toEqual(["sendPhoto", "sendMessage"]);
+    expect(sent[1].body).not.toHaveProperty("disable_notification");
+    expect(String(sent[1].body?.text)).toContain("新提問（學生補充後）｜HAO");
   });
 });

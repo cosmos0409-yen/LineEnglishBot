@@ -156,10 +156,19 @@ async function handleReviewRoutes(request: Request, env: Env, ctx: ExecutionCont
   }
 
   if (action === "approve") {
-    const outcome = await approve(env, q.id, role, String(form.get("final_answer") ?? ""), form.get("direct") === "1");
-    console.log(JSON.stringify({ event: "approve", questionId: q.id, role, outcome: outcome.kind }));
+    const answer = String(form.get("final_answer") ?? "");
+    const version = Number(form.get("draft_version"));
+    const outcome = await approve(env, q.id, role, answer, form.get("direct") === "1", Number.isInteger(version) && version > 0 ? version : null);
+    console.log(JSON.stringify({ event: "approve", questionId: q.id, role, outcome: outcome.kind, ...(outcome.kind === "rejected" ? { reason: outcome.reason } : {}) }));
     if (outcome.kind === "waiting") return back("waiting");
     if (outcome.kind === "approved") return back((await deliver(env, q.id)).ok ? "sent" : "push_failed");
+    if (outcome.reason === "draft_updated") {
+      // 學生在老師打開頁面後補傳了內容：不送出，重新顯示頁面，保留老師的修改並標出補傳的部分
+      const fresh = (await getQuestion(env, q.id)) ?? q;
+      const context = await getContextMessages(env, fresh);
+      const seenCount = Math.max(0, Number(form.get("seen_count")) || 0);
+      return page(reviewPage({ role, q: fresh, context, flashCode: null, highlightGenerate: false, csrf, blocked: { answer, seenCount } }));
+    }
     const map: Record<string, string> = {
       empty_answer: "empty",
       already_done: "already_done",

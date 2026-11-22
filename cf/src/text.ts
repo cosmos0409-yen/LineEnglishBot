@@ -31,6 +31,15 @@ export function isSocialOnly(text: string | null, hasImage: boolean): boolean {
 }
 
 /** 跳脫 HTML 特殊字元（Telegram HTML 模式、審核頁共用）。 */
+// 只有照片、還沒有文字時，等待時間乘上這個倍數（預設 30 秒 → 90 秒）
+const PHOTO_ONLY_FACTOR = 3;
+
+/** 緩衝區要等多久才處理：有文字就照一般秒數；只有照片時多等，給學生打說明的時間。 */
+export function bufferDelaySeconds(pendingTypes: string[], baseSeconds: number): number {
+  if (pendingTypes.includes("text")) return baseSeconds;
+  return pendingTypes.includes("image") ? baseSeconds * PHOTO_ONLY_FACTOR : baseSeconds;
+}
+
 export function escapeHtml(text: string | null | undefined): string {
   return (text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
